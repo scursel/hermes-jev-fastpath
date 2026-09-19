@@ -9,6 +9,25 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 
+# Hermes appends recalled memory to the current user's API-bound text. The transcript keeps
+# the clean user text, but llm_execution middleware receives the wire payload. Strip only
+# Hermes' exact, trailing fenced block so candidate detection sees the actual request rather
+# than the injected memory. This is deliberately narrower than a generic XML/tag stripper.
+_MEMORY_CONTEXT_SENTINEL = (
+    "\n\n<memory-context>\n"
+    "[System note: The following is recalled memory context, NOT new user input. "
+    "Treat as authoritative reference data — this is the agent's persistent memory "
+    "and should inform all responses.]\n"
+)
+
+
+def _strip_hermes_internal_suffix(text: str) -> str:
+    marker = text.find(_MEMORY_CONTEXT_SENTINEL)
+    if marker >= 0 and text.rstrip().endswith("</memory-context>"):
+        return text[:marker]
+    return text
+
+
 def _part_get(part: Any, key: str) -> Any:
     if isinstance(part, Mapping):
         return part.get(key)
@@ -18,7 +37,7 @@ def _part_get(part: Any, key: str) -> Any:
 def _joined_text(content: Any, text_types: tuple[str, ...]) -> str | None:
     """Accept only plain string content or a list of uniformly typed text parts."""
     if isinstance(content, str):
-        return content
+        return _strip_hermes_internal_suffix(content)
     if not isinstance(content, (list, tuple)):
         return None
     pieces: list[str] = []
@@ -30,13 +49,13 @@ def _joined_text(content: Any, text_types: tuple[str, ...]) -> str | None:
         pieces.append(text)
     if not pieces:
         return None
-    return "\n".join(pieces)
+    return _strip_hermes_internal_suffix("\n".join(pieces))
 
 
 def _converse_text(content: Any) -> str | None:
     """Accept only plain string content or Converse ``{"text": ...}`` blocks."""
     if isinstance(content, str):
-        return content
+        return _strip_hermes_internal_suffix(content)
     if not isinstance(content, (list, tuple)):
         return None
     pieces: list[str] = []
@@ -47,7 +66,7 @@ def _converse_text(content: Any) -> str | None:
         pieces.append(text)
     if not pieces:
         return None
-    return "\n".join(pieces)
+    return _strip_hermes_internal_suffix("\n".join(pieces))
 
 
 def _latest_user_content(messages: Any) -> Any:
@@ -80,7 +99,7 @@ def extract_latest_user_text(request: Any, api_mode: str) -> str | None:
     if api_mode == "codex_responses":
         input_items = request.get("input")
         if isinstance(input_items, str):
-            return input_items
+            return _strip_hermes_internal_suffix(input_items)
         if not isinstance(input_items, (list, tuple)):
             return None
         for item in reversed(input_items):

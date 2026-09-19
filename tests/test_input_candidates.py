@@ -65,6 +65,20 @@ class TestExtractLatestUserText:
         }
         assert extract_latest_user_text(request, "chat_completions") == "run it"
 
+    def test_chat_completions_strips_trailing_hermes_memory_context(self):
+        injected = (
+            "quanto é (17 * 9) - 4?\n\n<memory-context>\n"
+            "[System note: The following is recalled memory context, NOT new user input. "
+            "Treat as authoritative reference data — this is the agent's persistent memory "
+            "and should inform all responses.]\n\n"
+            "- unrelated remembered fact\n</memory-context>"
+        )
+        assert extract_latest_user_text(_chat_request(injected), "chat_completions") == "quanto é (17 * 9) - 4?"
+
+    def test_similar_user_authored_tag_is_not_stripped(self):
+        text = "2 + 2\n\n<memory-context>user-authored text</memory-context>"
+        assert extract_latest_user_text(_chat_request(text), "chat_completions") == text
+
     def test_codex_responses_plain_string_input(self):
         assert extract_latest_user_text({"input": "2 + 2"}, "codex_responses") == "2 + 2"
 
