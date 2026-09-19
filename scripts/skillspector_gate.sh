@@ -2,9 +2,11 @@
 # Mandatory SkillSpector release gate (audit L6).
 #
 # Scans every executable/plugin runtime scope with --no-llm and fails on any scanner
-# error or any CRITICAL finding. Docs and test fixtures are deliberately NOT scanned:
-# they contain hostile example payloads and fake credential-shaped strings that are not
-# runtime code.
+# error or any CRITICAL finding. The CRITICAL policy is enforced from the scanner's JSON
+# report (audit L-b): the process exit code alone only signals execution errors, so the
+# gate parses `--format json` output and fails when a CRITICAL finding is present.
+# Docs and test fixtures are deliberately NOT scanned: they contain hostile example
+# payloads and fake credential-shaped strings that are not runtime code.
 #
 # Why the repo-root scan is NOT authoritative for this repository: the scanner walks the
 # whole tree it is given; on a checkout containing a virtualenv, packaged example data
@@ -16,9 +18,19 @@ set -uo pipefail
 
 if ! command -v skillspector >/dev/null 2>&1; then
     echo "skillspector is required for the release gate but is not installed." >&2
-    echo "Install it (e.g.: uv tool install skillspector || pip install skillspector)" >&2
+    echo "Install it (e.g.: uv tool install skillspector==2.5.3 || pip install skillspector==2.5.3)" >&2
     exit 1
 fi
+
+PYTHON_BIN="${PYTHON_BIN:-$(command -v python3 || command -v python || true)}"
+if [ -z "$PYTHON_BIN" ]; then
+    echo "python3 is required to evaluate the skillspector JSON report" >&2
+    exit 1
+fi
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPORT="$(mktemp)"
+trap 'rm -f "$REPORT"' EXIT
 
 status=0
 for target in jev_fastpath scripts; do
@@ -28,8 +40,13 @@ for target in jev_fastpath scripts; do
         continue
     fi
     echo "== skillspector scan $target --no-llm =="
-    if ! skillspector scan "$target" --no-llm; then
+    rm -f "$REPORT"
+    if ! skillspector scan "$target" --no-llm --format json -o "$REPORT" >/dev/null; then
         echo "skillspector scan failed for $target" >&2
+        status=1
+        continue
+    fi
+    if ! "$PYTHON_BIN" "$SCRIPT_DIR/skillspector_findings.py" "$REPORT"; then
         status=1
     fi
 done

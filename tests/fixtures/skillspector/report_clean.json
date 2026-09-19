@@ -1,0 +1,45 @@
+{
+  "skill": {
+    "name": "fixture-clean",
+    "source": "tests/fixtures/skillspector/sample-clean",
+    "scanned_at": "2026-01-01T00:00:00+00:00"
+  },
+  "risk_assessment": {
+    "score": 10,
+    "severity": "LOW",
+    "recommendation": "SAFE"
+  },
+  "components": [
+    {
+      "path": "safe.py",
+      "type": "python",
+      "lines": 2,
+      "executable": true,
+      "size_bytes": 24
+    }
+  ],
+  "issues": [
+    {
+      "id": "AST7",
+      "finding_id": "finding-fixture-low",
+      "category": "Dangerous Code Execution",
+      "pattern": "Dynamic attribute access via getattr()",
+      "severity": "LOW",
+      "confidence": 0.5,
+      "location": {
+        "file": "safe.py",
+        "start_line": 1,
+        "end_line": 1
+      },
+      "finding": "    return getattr(part, key, None)",
+      "explanation": "Fixture: a non-CRITICAL finding that must NOT fail the gate.",
+      "remediation": "Use an explicit mapping.",
+      "code_snippet": ""
+    }
+  ],
+  "suppressed_count": 0,
+  "suppressed": [],
+  "metadata": {},
+  "execution_successful": true,
+  "analysis_completeness": "full"
+}
