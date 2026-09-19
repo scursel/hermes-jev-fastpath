@@ -33,10 +33,20 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      # Hermes intentionally refuses wheel/sdist builds; its supported development path
+      # is an editable checkout. Pin both the checkout action and the upstream source SHA.
+      - name: Checkout pinned Hermes Agent source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: NousResearch/hermes-agent
+          ref: 7c6f21a5e12ba9b1c674ec9b410fa6b8c45de4f8
+          path: .ci/hermes-agent
+          persist-credentials: false
+
       - name: Install test dependencies and pinned Hermes Agent source
         run: |
           python -m pip install -e '.[test]'
-          python -m pip install 'hermes-agent @ git+https://github.com/NousResearch/hermes-agent.git@7c6f21a5e12ba9b1c674ec9b410fa6b8c45de4f8'
+          python -m pip install -e .ci/hermes-agent
 
       - name: Byte-compile
         run: python -m compileall -q jev_fastpath scripts __init__.py
