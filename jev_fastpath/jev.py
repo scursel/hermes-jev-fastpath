@@ -151,6 +151,7 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 _OPENER = urllib.request.build_opener(_NoRedirect)
+# ``OpenerDirector`` is not callable: every call site passes ``_OPENER.open`` (audit C1).
 
 # TypeSafe answers a bounded typed decision; 64 KiB is generous and caps read memory.
 MAX_RESPONSE_BYTES = 64 * 1024
@@ -206,7 +207,11 @@ _EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="jev-fastpath")
 
 
 def _exchange(request: urllib.request.Request, opener, timeout_seconds: float) -> bytes:
-    """One capped HTTP exchange; converts every transport failure into a coded JevError."""
+    """One capped HTTP exchange; converts every transport failure into a coded JevError.
+
+    ``opener`` is a callable ``(request, timeout=...)`` returning a context-managed
+    response; :func:`classify` passes the hardened ``_OPENER.open`` by default.
+    """
     try:
         with opener(request, timeout=timeout_seconds) as response:
             chunks: list[bytes] = []
@@ -271,7 +276,7 @@ def classify(
     started = time.monotonic()
     try:
         raw = _EXECUTOR.submit(
-            _exchange, request, opener or _OPENER, settings.timeout_seconds,
+            _exchange, request, opener or _OPENER.open, settings.timeout_seconds,
         ).result(timeout=settings.timeout_seconds)
     except FuturesTimeoutError as exc:
         breaker.record_failure()

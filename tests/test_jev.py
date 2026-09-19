@@ -1,8 +1,12 @@
 """Strict TypeSafe Jev client: payload shape, parsing, and failure isolation."""
 
+import contextlib
+import http.server
 import json
+import threading
 import time
 import urllib.error
+from typing import Any
 
 import pytest
 
@@ -451,6 +455,104 @@ class TestTransportBounds:
         with pytest.raises(JevError) as http:
             classify("2 + 2", ("calculator",), {}, Settings(), opener=opener_for(500))
         assert http.value.code == "http_error"
+
+
+class _LoopbackHandler(http.server.BaseHTTPRequestHandler):
+    """Real HTTP handler: records each request, then answers from ``server.script``."""
+
+    protocol_version = "HTTP/1.1"
+
+    def do_POST(self):
+        server: Any = self.server
+        length = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(length) if length else b""
+        server.requests.append({
+            "path": self.path,
+            "authorization": self.headers.get("Authorization"),
+            "body": body,
+        })
+        status, headers, payload = server.script(self.path)
+        self.send_response(status)
+        for name, value in headers.items():
+            self.send_header(name, value)
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        if payload:
+            self.wfile.write(payload)
+
+    def log_message(self, format, *args):  # keep the pytest output clean
+        pass
+
+
+class _LoopbackServer(http.server.ThreadingHTTPServer):
+    daemon_threads = True
+
+    def __init__(self, script):
+        super().__init__(("127.0.0.1", 0), _LoopbackHandler)
+        self.script = script
+        self.requests = []
+
+
+@contextlib.contextmanager
+def loopback_server(script):
+    """Serve real HTTP on 127.0.0.1 and yield ``(server, url)`` (audit C1 regression seam)."""
+    server = _LoopbackServer(script)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server, f"http://127.0.0.1:{server.server_address[1]}/v1/systemone"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5.0)
+
+
+class TestDefaultOpenerTransport:
+    """Audit C1: ``opener=None`` must complete over a real socket, not only via fakes."""
+
+    def test_default_opener_completes_against_loopback_200(self, monkeypatch):
+        import jev_fastpath.jev as jev_module
+
+        payload = json.dumps(valid_response()).encode("utf-8")
+
+        def script(path):
+            return 200, {"Content-Type": "application/json"}, payload
+
+        with loopback_server(script) as (server, url):
+            monkeypatch.setattr(jev_module, "TYPESAFE_URL", url)
+            decision = classify("2 + 2", ("calculator",), {"platform": "cli"}, Settings())
+
+        assert decision.handler_id == "calculator"
+        assert decision.confidence == 0.97
+        assert decision.short_circuit_probability == 0.95
+        assert len(server.requests) == 1
+        sent = server.requests[0]
+        assert sent["path"] == "/v1/systemone"
+        assert sent["authorization"] == f"Bearer {API_KEY}"
+        body = json.loads(sent["body"].decode("utf-8"))
+        assert body["state"]["message"] == "2 + 2"
+        assert body["state"]["candidate_handlers"] == ["calculator"]
+
+    def test_default_opener_rejects_loopback_redirect_without_replay(self, monkeypatch):
+        import jev_fastpath.jev as jev_module
+
+        payload = json.dumps(valid_response()).encode("utf-8")
+
+        def script(path):
+            if path == "/v1/systemone":
+                return 302, {"Location": "/second"}, b""
+            return 200, {"Content-Type": "application/json"}, payload
+
+        with loopback_server(script) as (server, url):
+            monkeypatch.setattr(jev_module, "TYPESAFE_URL", url)
+            with pytest.raises(JevError) as excinfo:
+                classify("2 + 2", ("calculator",), {}, Settings())
+
+        assert excinfo.value.code == "redirect"
+        # Exactly one request, to the configured endpoint only: the Authorization header
+        # is never replayed to the redirect target.
+        assert [request["path"] for request in server.requests] == ["/v1/systemone"]
+        assert server.requests[0]["authorization"] == f"Bearer {API_KEY}"
 
 
 class TestCircuitBreaker:
