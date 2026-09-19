@@ -10,9 +10,12 @@ from __future__ import annotations
 import json
 import math
 import os
+import threading
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from typing import Any, Mapping
 
 from .telemetry import redact_and_bound
@@ -35,11 +38,52 @@ _NO_LLM_CRITERIA = (
 
 
 class JevError(RuntimeError):
-    """Any TypeSafe transport, protocol, or parsing failure; always fails open upstream.
+    """Any TypeSafe transport, protocol, credential, or parsing failure; fails open upstream.
 
     Messages are fixed strings plus status codes/type names — never a response body, the
-    authorization header, or a full exception chain.
+    authorization header, or a full exception chain. ``code`` is a bounded, non-secret
+    reason code used by telemetry.
     """
+
+    def __init__(self, message: str, code: str = "invalid_response") -> None:
+        super().__init__(message)
+        self.code = code
+
+
+# Bounded reason codes surfaced in telemetry (audit L2): missing key, credential scope
+# errors, timeout, network, HTTP/auth, redirect, oversized response, invalid payload,
+# open circuit.
+def _resolve_api_key() -> str:
+    """Resolve ``TYPESAFE_API_KEY`` through the Hermes secret scope (multiplex-safe).
+
+    When the Hermes ``agent.secret_scope`` module is importable it is authoritative: an
+    empty or missing scoped value raises (fail open) instead of silently reading the
+    ambient launch-profile environment, and ``UnscopedSecretError``/runtime failures are
+    converted to :class:`JevError`. ``os.environ`` is only consulted when the Hermes
+    module truly is unavailable (standalone test/package compatibility).
+    """
+    try:
+        from agent import secret_scope
+    except ImportError:
+        value = os.environ.get("TYPESAFE_API_KEY", "").strip()
+        if not value:
+            raise JevError(
+                "TYPESAFE_API_KEY is unavailable in the environment",
+                code="missing_credential",
+            )
+        return value
+    try:
+        value = secret_scope.get_secret("TYPESAFE_API_KEY")
+    except Exception as exc:
+        raise JevError(
+            "Hermes secret scope rejected the credential read", code="credential_error",
+        ) from exc
+    if not isinstance(value, str) or not value.strip():
+        raise JevError(
+            "TYPESAFE_API_KEY is unavailable in the Hermes secret scope",
+            code="missing_credential",
+        )
+    return value.strip()
 
 
 def build_questions(candidates: tuple[str, ...]) -> dict[str, Any]:
@@ -99,18 +143,120 @@ def parse_response(payload: object, candidates: tuple[str, ...], latency_ms: int
     )
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Reject every redirect: the typed POST is never replayed elsewhere (audit L1)."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(newurl, code, msg, headers, fp)
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+# TypeSafe answers a bounded typed decision; 64 KiB is generous and caps read memory.
+MAX_RESPONSE_BYTES = 64 * 1024
+
+
+class CircuitBreaker:
+    """Thread-safe failure breaker: open after N consecutive failures, probe after cooldown.
+
+    Bounds the blast radius of a TypeSafe outage: an open circuit answers immediately
+    (fail open to the real LLM) instead of paying the full deadline on every candidate
+    turn. State is per-process and deliberately tiny.
+    """
+
+    def __init__(self, failure_threshold: int = 3, cooldown_seconds: float = 30.0,
+                 monotonic=time.monotonic):
+        self._threshold = int(failure_threshold)
+        self._cooldown = float(cooldown_seconds)
+        self._monotonic = monotonic
+        self._lock = threading.Lock()
+        self._consecutive_failures = 0
+        self._opened_at: float | None = None
+
+    def is_open(self) -> bool:
+        now = self._monotonic()
+        with self._lock:
+            if self._opened_at is None:
+                return False
+            if now - self._opened_at >= self._cooldown:
+                # Half-open: allow one probe attempt again.
+                self._opened_at = None
+                self._consecutive_failures = self._threshold - 1
+                return False
+            return True
+
+    def record_success(self) -> None:
+        with self._lock:
+            self._consecutive_failures = 0
+            self._opened_at = None
+
+    def record_failure(self) -> None:
+        now = self._monotonic()
+        with self._lock:
+            self._consecutive_failures += 1
+            if self._consecutive_failures >= self._threshold:
+                self._opened_at = now
+
+
+BREAKER = CircuitBreaker()
+
+# Bounded shared pool: the whole HTTP exchange runs on one of two workers with a socket
+# timeout, so a stalled call can never accumulate threads (audit M1).
+_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="jev-fastpath")
+
+
+def _exchange(request: urllib.request.Request, opener, timeout_seconds: float) -> bytes:
+    """One capped HTTP exchange; converts every transport failure into a coded JevError."""
+    try:
+        with opener(request, timeout=timeout_seconds) as response:
+            chunks: list[bytes] = []
+            size = 0
+            while True:
+                chunk = response.read(8192)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > MAX_RESPONSE_BYTES:
+                    raise JevError(
+                        "TypeSafe response exceeds the 64 KiB response cap",
+                        code="response_too_large",
+                    )
+                chunks.append(chunk)
+            raw = b"".join(chunks)
+        return raw.decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        if 300 <= exc.code < 400:
+            raise JevError(f"TypeSafe redirect {exc.code} rejected", code="redirect") from exc
+        code = "auth_error" if exc.code in (401, 403) else "http_error"
+        raise JevError(f"TypeSafe HTTP {exc.code}", code=code) from exc
+    except (urllib.error.URLError, TimeoutError) as exc:
+        raise JevError(f"TypeSafe network failure: {type(exc).__name__}", code="network_error") from exc
+    except JevError:
+        raise
+    except OSError as exc:
+        # Socket/http.client read failures; ValueError (unicode) handled by the caller.
+        raise JevError(f"TypeSafe transport failure: {type(exc).__name__}", code="network_error") from exc
+
+
 def classify(
     text: str,
     candidates: tuple[str, ...],
     context: Mapping[str, Any],
     settings,
     *,
-    opener=urllib.request.urlopen,
+    opener=None,
+    breaker: CircuitBreaker | None = None,
 ) -> Decision:
-    """Ask Jev for one typed routing decision; exactly one network attempt, no retries."""
-    api_key = os.environ.get("TYPESAFE_API_KEY", "").strip()
-    if not api_key:
-        raise JevError("TYPESAFE_API_KEY is unavailable")
+    """Ask Jev for one typed routing decision; exactly one network attempt, no retries.
+
+    The exchange runs under a hard wall-clock deadline (:attr:`Settings.timeout_seconds`)
+    with a capped response read and a failure circuit breaker, so a TypeSafe outage costs
+    every candidate turn at most one bounded deadline before failing open.
+    """
+    breaker = breaker or BREAKER
+    if breaker.is_open():
+        raise JevError("TypeSafe circuit breaker is open", code="circuit_open")
+    api_key = _resolve_api_key()
     payload_body = build_payload(text, candidates, context, settings)
     request = urllib.request.Request(
         TYPESAFE_URL,
@@ -124,21 +270,28 @@ def classify(
     )
     started = time.monotonic()
     try:
-        with opener(request, timeout=settings.timeout_seconds) as response:
-            raw = response.read().decode("utf-8")
-    except urllib.error.HTTPError as exc:
-        raise JevError(f"TypeSafe HTTP {exc.code}") from exc
-    except (urllib.error.URLError, TimeoutError) as exc:
-        raise JevError(f"TypeSafe network failure: {type(exc).__name__}") from exc
-    except (OSError, ValueError) as exc:
-        # OSError covers socket/http.client read failures; ValueError covers unicode decoding.
-        raise JevError(f"TypeSafe transport failure: {type(exc).__name__}") from exc
+        raw = _EXECUTOR.submit(
+            _exchange, request, opener or _OPENER, settings.timeout_seconds,
+        ).result(timeout=settings.timeout_seconds)
+    except FuturesTimeoutError as exc:
+        breaker.record_failure()
+        raise JevError("TypeSafe deadline exceeded", code="timeout") from exc
+    except JevError as exc:
+        breaker.record_failure()
+        raise
     latency_ms = round((time.monotonic() - started) * 1000)
     try:
         payload = json.loads(raw)
     except json.JSONDecodeError as exc:
-        raise JevError("TypeSafe returned invalid JSON") from exc
-    return parse_response(payload, candidates, latency_ms)
+        breaker.record_failure()
+        raise JevError("TypeSafe returned invalid JSON", code="invalid_response") from exc
+    try:
+        decision = parse_response(payload, candidates, latency_ms)
+    except JevError:
+        breaker.record_failure()
+        raise
+    breaker.record_success()
+    return decision
 
 
 def build_payload(

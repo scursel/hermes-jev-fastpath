@@ -1,7 +1,8 @@
 """Strict TypeSafe Jev client: payload shape, parsing, and failure isolation."""
 
 import json
-import math
+import time
+import urllib.error
 
 import pytest
 
@@ -9,6 +10,7 @@ from jev_fastpath.config import Settings
 from jev_fastpath.jev import (
     JEV_MODEL,
     TYPESAFE_URL,
+    CircuitBreaker,
     JevError,
     build_questions,
     classify,
@@ -24,6 +26,14 @@ def _api_key(monkeypatch):
     monkeypatch.setenv("TYPESAFE_API_KEY", API_KEY)
 
 
+@pytest.fixture(autouse=True)
+def _fresh_breaker(monkeypatch):
+    """Isolate the module-level circuit breaker between tests."""
+    import jev_fastpath.jev as jev_module
+
+    monkeypatch.setattr(jev_module, "BREAKER", jev_module.CircuitBreaker())
+
+
 def valid_response(choice="calculator", confidence=0.97, noul=0.95):
     return {
         "answers": {
@@ -36,10 +46,16 @@ def valid_response(choice="calculator", confidence=0.97, noul=0.95):
 
 
 class FakeResponse:
+    """HTTP-response fake with EOF semantics: one full read, then empty chunks."""
+
     def __init__(self, payload):
         self._data = json.dumps(payload).encode("utf-8")
+        self._done = False
 
-    def read(self):
+    def read(self, size=-1):
+        if self._done:
+            return b""
+        self._done = True
         return self._data
 
     def __enter__(self):
@@ -156,24 +172,25 @@ class TestClassifyFailures:
             classify("2 + 2", ("calculator",), {}, Settings(), opener=opener)
 
     def test_invalid_json_rejects(self):
-        def opener(request, timeout=None):
-            return FakeResponse.__new__(FakeResponse)  # bypass __init__
+        class Raw:
+            def __init__(self):
+                self._done = False
 
-        def opener2(request, timeout=None):
-            class Raw:
-                def __enter__(self):
-                    return self
+            def __enter__(self):
+                return self
 
-                def __exit__(self, *exc):
-                    return False
+            def __exit__(self, *exc):
+                return False
 
-                def read(self):
-                    return b"{not json"
+            def read(self, size=-1):
+                if self._done:
+                    return b""
+                self._done = True
+                return b"{not json"
 
-            return Raw()
-
-        with pytest.raises(JevError):
-            classify("2 + 2", ("calculator",), {}, Settings(), opener=opener2)
+        with pytest.raises(JevError) as excinfo:
+            classify("2 + 2", ("calculator",), {}, Settings(), opener=lambda request, timeout=None: Raw())
+        assert excinfo.value.code == "invalid_response"
 
     def test_io_error_during_read_rejects(self):
         class Raw:
@@ -183,7 +200,7 @@ class TestClassifyFailures:
             def __exit__(self, *exc):
                 return False
 
-            def read(self):
+            def read(self, size=-1):
                 raise OSError("connection reset")
 
         with pytest.raises(JevError):
@@ -286,4 +303,202 @@ class TestRedactAndBound:
 def test_constants_match_spec():
     assert TYPESAFE_URL == "https://api.typesafe.ai/v1/systemone"
     assert JEV_MODEL == "jev-latest"
-    assert not math.isnan(1.0)
+
+
+@pytest.fixture
+def fake_secret_scope(monkeypatch):
+    """Install a fake ``agent.secret_scope`` module emulating Hermes' multiplexed scope."""
+    import sys
+    import types
+
+    agent_mod = types.ModuleType("agent")
+    scope_mod = types.ModuleType("agent.secret_scope")
+    state = {"value": "scoped-key-A", "raise": None, "calls": 0}
+
+    def get_secret(name, default=None):
+        state["calls"] += 1
+        if state["raise"] is not None:
+            raise state["raise"]
+        return state["value"]
+
+    scope_mod.get_secret = get_secret
+    agent_mod.secret_scope = scope_mod
+    monkeypatch.setitem(sys.modules, "agent", agent_mod)
+    monkeypatch.setitem(sys.modules, "agent.secret_scope", scope_mod)
+    return state
+
+
+class TestCredentialResolution:
+    def test_scoped_secret_wins_over_ambient_env(self, fake_secret_scope):
+        # Multiplexed gateway: scope key A + ambient env key B => Authorization uses A.
+        decision, calls = classify_with(valid_response())
+        request = calls[0]["request"]
+        assert request.get_header("Authorization") == "Bearer scoped-key-A"
+
+    def test_empty_scoped_secret_never_falls_back_to_env(self, fake_secret_scope):
+        # The scoped value is empty and an ambient env key exists: fail open, never use B.
+        fake_secret_scope["value"] = None
+        with pytest.raises(JevError) as excinfo:
+            classify_with(valid_response())
+        assert excinfo.value.code == "missing_credential"
+
+    def test_blank_scoped_secret_never_falls_back_to_env(self, fake_secret_scope):
+        fake_secret_scope["value"] = "   "
+        with pytest.raises(JevError) as excinfo:
+            classify_with(valid_response())
+        assert excinfo.value.code == "missing_credential"
+
+    def test_unscoped_secret_error_fails_open(self, fake_secret_scope):
+        fake_secret_scope["raise"] = RuntimeError("unscoped secret")
+        with pytest.raises(JevError) as excinfo:
+            classify_with(valid_response())
+        assert excinfo.value.code == "credential_error"
+
+    def test_scope_is_consulted_exactly_once_per_call(self, fake_secret_scope):
+        classify_with(valid_response())
+        classify_with(valid_response())
+        assert fake_secret_scope["calls"] == 2
+
+    def test_env_fallback_only_when_module_unavailable(self, monkeypatch):
+        import sys
+
+        monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+        monkeypatch.setenv("TYPESAFE_API_KEY", "env-key-B")
+        monkeypatch.setitem(sys.modules, "agent", None)  # forces ImportError on import
+        decision, calls = classify_with(valid_response())
+        assert calls[0]["request"].get_header("Authorization") == "Bearer env-key-B"
+
+
+class _SlowRaw:
+    """Response whose read blocks past the deadline (EOF after one chunk)."""
+
+    def __init__(self, delay, payload):
+        self._delay = delay
+        self._data = json.dumps(payload).encode("utf-8")
+        self._done = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self, size=-1):
+        if self._done:
+            return b""
+        self._done = True
+        time.sleep(self._delay)
+        return self._data
+
+
+class TestTransportBounds:
+    def test_deadline_bounds_slow_read(self):
+        def opener(request, timeout=None):
+            return _SlowRaw(0.5, valid_response())
+
+        started = time.monotonic()
+        with pytest.raises(JevError) as excinfo:
+            classify("2 + 2", ("calculator",), {}, Settings(timeout_seconds=0.2), opener=opener)
+        elapsed = time.monotonic() - started
+        assert excinfo.value.code == "timeout"
+        assert elapsed < 5.0
+
+    def test_oversized_response_rejected(self):
+        calls = []
+
+        def opener(request, timeout=None):
+            calls.append(request)
+            return _SlowRaw(0, {"answers": {}, "pad": "x" * 70000})
+
+        with pytest.raises(JevError) as excinfo:
+            classify("2 + 2", ("calculator",), {}, Settings(), opener=opener)
+        assert excinfo.value.code == "response_too_large"
+        assert len(calls) == 1
+
+    def test_redirect_rejected_without_second_request(self):
+        import urllib.error
+
+        calls = []
+
+        def opener(request, timeout=None):
+            calls.append(request)
+            raise urllib.error.HTTPError(request.full_url, 302, "Found", hdrs=None, fp=None)
+
+        with pytest.raises(JevError) as excinfo:
+            classify("2 + 2", ("calculator",), {}, Settings(), opener=opener)
+        assert excinfo.value.code == "redirect"
+        assert len(calls) == 1  # never followed, so the API key is never re-sent
+
+    def test_default_opener_rejects_redirects(self):
+        from jev_fastpath.jev import _NoRedirect
+
+        handler = _NoRedirect()
+        with pytest.raises(urllib.error.HTTPError):
+            handler.redirect_request(None, None, 302, "Found", None, "https://evil.example/")
+
+    def test_http_error_reason_codes(self):
+        import urllib.error
+
+        def opener_for(code):
+            def opener(request, timeout=None):
+                raise urllib.error.HTTPError(request.full_url, code, "x", hdrs=None, fp=None)
+
+            return opener
+
+        with pytest.raises(JevError) as auth:
+            classify("2 + 2", ("calculator",), {}, Settings(), opener=opener_for(401))
+        assert auth.value.code == "auth_error"
+        with pytest.raises(JevError) as http:
+            classify("2 + 2", ("calculator",), {}, Settings(), opener=opener_for(500))
+        assert http.value.code == "http_error"
+
+
+class TestCircuitBreaker:
+    def _two_failures(self, breaker):
+        def opener(request, timeout=None):
+            raise TimeoutError("down")
+
+        for _ in range(2):
+            with pytest.raises(JevError):
+                classify(
+                    "2 + 2", ("calculator",), {}, Settings(), opener=opener, breaker=breaker,
+                )
+
+    def test_opens_after_threshold_and_blocks_without_network(self):
+        calls = []
+
+        def opener(request, timeout=None):
+            calls.append(request)
+            raise TimeoutError("down")
+
+        breaker = CircuitBreaker(failure_threshold=2, cooldown_seconds=30.0)
+        self._two_failures(breaker)
+        assert breaker.is_open()
+        with pytest.raises(JevError) as excinfo:
+            classify("2 + 2", ("calculator",), {}, Settings(), opener=opener, breaker=breaker)
+        assert excinfo.value.code == "circuit_open"
+        assert calls == []  # blocked before any network attempt
+
+    def test_cooldown_expiry_allows_probe_again(self):
+        breaker = CircuitBreaker(failure_threshold=2, cooldown_seconds=0.05)
+        self._two_failures(breaker)
+        assert breaker.is_open()
+        time.sleep(0.1)
+        assert not breaker.is_open()  # half-open allows a probe again
+
+    def test_success_resets_failure_count(self):
+        attempts = {"n": 0}
+
+        def opener(request, timeout=None):
+            attempts["n"] += 1
+            if attempts["n"] % 2 == 1:
+                raise TimeoutError("down")
+            return FakeResponse(valid_response())
+
+        breaker = CircuitBreaker(failure_threshold=2, cooldown_seconds=30.0)
+        with pytest.raises(JevError):
+            classify("2 + 2", ("calculator",), {}, Settings(), opener=opener, breaker=breaker)
+        classify("2 + 2", ("calculator",), {}, Settings(), opener=opener, breaker=breaker)
+        with pytest.raises(JevError):
+            classify("2 + 2", ("calculator",), {}, Settings(), opener=opener, breaker=breaker)
+        assert not breaker.is_open()
