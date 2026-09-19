@@ -70,11 +70,6 @@ class TestActiveAcceptance:
         downstream.assert_not_called()
         assert response.choices[0].message.content == "2 + 2 = 4"
 
-    def test_next_call_receives_original_request(self, runtime, downstream):
-        request = _request()
-        runtime.middleware(request=request, next_call=downstream, api_call_count=1, **_context())
-        downstream.assert_not_called()
-
     def test_acceptance_emits_short_circuit_telemetry(self, runtime, downstream):
         runtime.middleware(request=_request(), next_call=downstream, api_call_count=1, **_context())
         event, meta = runtime.telemetry.events[-1]
@@ -92,6 +87,19 @@ class TestFailOpenPaths:
         downstream = Mock(return_value=downstream_response)
         assert runtime.middleware(request=_request(), next_call=downstream, api_call_count=1, **_context()) is downstream_response
         downstream.assert_called_once_with(_request())
+
+    def test_next_call_receives_the_original_request_object(self, downstream):
+        # Fall-through path: the provider receives the exact original request object,
+        # never a copy or a rebuilt request (prompt-cache safety).
+        runtime = FastPathRuntime(
+            Settings(mode="active"),
+            classifier=lambda *a: _decision(handler="normal_llm"),
+            telemetry=TelemetryRecorder(),
+        )
+        request = _request()
+        runtime.middleware(request=request, next_call=downstream, api_call_count=1, **_context())
+        downstream.assert_called_once_with(request)
+        assert downstream.call_args[0][0] is request
 
     def test_mode_off_bypasses_without_classifier(self, downstream):
         runtime = FastPathRuntime(Settings(mode="off"), classifier=Mock(side_effect=AssertionError))
@@ -125,7 +133,7 @@ class TestFailOpenPaths:
         response = object()
         downstream = Mock(return_value=response)
         context = _context(api_mode="future_protocol")
-        assert runtime.middleware(request=_request(), next_call=downstream, **context) is response
+        assert runtime.middleware(request=_request(), next_call=downstream, api_call_count=1, **context) is response
         downstream.assert_called_once()
         assert telemetry.events == []
 
@@ -275,7 +283,7 @@ class TestShadowMode:
 
 
 class TestDecisionCache:
-    def test_same_turn_reuses_classifier_decision(self, downstream):
+    def test_same_turn_second_attempt_falls_through_without_second_jev_call(self, downstream):
         calls = []
         cache = DecisionCache()
         runtime = FastPathRuntime(
@@ -289,7 +297,7 @@ class TestDecisionCache:
         assert len(calls) == 1
         assert downstream.call_count == 1
         assert first.choices[0].message.content == "2 + 2 = 4"
-        assert second is not first.choices  # the provider response came from downstream
+        assert second is downstream.return_value  # the second attempt returned the provider response
 
     def test_different_turns_and_texts_miss_cache(self, downstream):
         calls = []
