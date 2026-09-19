@@ -59,6 +59,19 @@ class TestEvaluateExpression:
     def test_valid_expressions(self, expression, expected):
         assert evaluate_expression(expression) == expected
 
+    def test_decimal_literals_are_exact_decimal_not_binary_float(self):
+        from fractions import Fraction
+
+        assert evaluate_expression("0.1 + 0.2") == Fraction(3, 10)
+
+    def test_large_division_is_exact(self):
+        assert evaluate_expression("12345678901234567890 / 2") == 6172839450617283945
+
+    def test_small_division_is_exact(self):
+        from fractions import Fraction
+
+        assert evaluate_expression("1 / 100000000") == Fraction(1, 10**8)
+
     def test_division_by_zero_rejects(self):
         with pytest.raises(ArithmeticRejected):
             evaluate_expression("1 / 0")
@@ -73,6 +86,12 @@ class TestEvaluateExpression:
             evaluate_expression("2 ** 13")
         with pytest.raises(ArithmeticRejected):
             evaluate_expression("2 ** -13")
+
+    def test_non_integer_exponent_rejects(self):
+        with pytest.raises(ArithmeticRejected):
+            evaluate_expression("2 ** 0.5")
+        with pytest.raises(ArithmeticRejected):
+            evaluate_expression("9 ** (1 / 2)")
 
     def test_literal_digit_cap(self):
         assert evaluate_expression("9" * 100) == int("9" * 100)
@@ -116,9 +135,8 @@ class TestEvaluateExpression:
         with pytest.raises(ArithmeticRejected):
             evaluate_expression("1e400")
 
-    def test_non_finite_results_reject(self):
-        with pytest.raises(ArithmeticRejected):
-            evaluate_expression("2.0 ** 10000")
+    def test_oversized_results_reject(self):
+        # Exact arithmetic cannot overflow, so the resource guard is the digit cap.
         with pytest.raises(ArithmeticRejected):
             evaluate_expression("1e308 * 10")
 
@@ -135,6 +153,14 @@ class TestRendering:
             ("quanto é (17 * 9) - 4?", "(17 * 9) - 4 = 149"),
             ("calcule 12.5 / 5", "12.5 / 5 = 2.5"),
             ("what is 10 / 4?", "10 / 4 = 2.5"),
+            # Exact decimal, not the binary-float artifact 6172839450617283944.
+            ("12345678901234567890 / 2", "12345678901234567890 / 2 = 6172839450617283945"),
+            # Exact decimal addition, not 0.30000000000000004.
+            ("0.1 + 0.2", "0.1 + 0.2 = 0.3"),
+            # Terminating decimal rendered exactly, without misleading rounding.
+            ("1 / 100000000", "1 / 100000000 = 0.00000001"),
+            # Non-terminating results render as the exact fraction (documented).
+            ("1 / 3", "1 / 3 = 1/3"),
         ],
     )
     def test_render_calculation(self, text, expected):
@@ -142,7 +168,25 @@ class TestRendering:
 
     @pytest.mark.parametrize(
         ("value", "expected"),
-        [(4, "4"), (4.0, "4"), (2.5, "2.5"), (149, "149"), (-2, "-2"), (0.1, "0.1")],
+        [(4, "4"), (2.5, "2.5"), (149, "149"), (-2, "-2")],
     )
-    def test_format_number_is_deterministic(self, value, expected):
+    def test_format_number_int_and_float(self, value, expected):
         assert format_number(value) == expected
+
+    @pytest.mark.parametrize(
+        ("numerator", "denominator", "expected"),
+        [
+            (149, 1, "149"),
+            (5, 2, "2.5"),
+            (3, 10, "0.3"),
+            (1, 10**8, "0.00000001"),
+            (-1, 2, "-0.5"),
+            (3, 4, "0.75"),
+            (1, 3, "1/3"),
+            (-2, 3, "-2/3"),
+        ],
+    )
+    def test_format_number_exact_rationals(self, numerator, denominator, expected):
+        from fractions import Fraction
+
+        assert format_number(Fraction(numerator, denominator)) == expected
