@@ -845,7 +845,8 @@ Assert recursive redaction, bounded previews, HERMES_HOME-scoped path, one JSON 
 Use a counting `next_call` and injected classifier/clock. Cover:
 
 - mode `off` bypass;
-- `api_call_count > 0` bypass;
+- `api_call_count >= 2` bypass (attempts are counted 1-based: the first attempt arrives as
+  `api_call_count == 1`; a re-delivered first attempt is caught by the per-turn claim);
 - missing session or turn identity without cache corruption;
 - unsupported API mode;
 - no candidate without Jev call;
@@ -979,7 +980,7 @@ class FastPathRuntime:
         if self.telemetry is not None:
             self.telemetry.write(event, meta)
 
-    def middleware(self, *, request, next_call, api_call_count=0, session_id="",
+    def middleware(self, *, request, next_call, api_call_count=None, session_id="",
                    turn_id="", api_mode="", **context):
         downstream_called = False
 
@@ -1020,7 +1021,9 @@ class FastPathRuntime:
 
     def _evaluate_or_fallthrough(self, *, request, downstream, api_call_count,
                                  session_id, turn_id, api_mode, context):
-        if self.settings.mode == "off" or int(api_call_count or 0) != 0:
+        if self.settings.mode == "off" or int(api_call_count or 0) != 1:
+            # Shipped contract: attempts are 1-based, and a per-turn claim (plugin.py)
+            # makes a re-delivered first attempt fall through instead of re-evaluating.
             return downstream()
         text = extract_latest_user_text(request, api_mode)
         if text is None:

@@ -38,7 +38,8 @@ and Hermes runs the real provider call exactly once.
    retries, fallbacks, and restarts that re-deliver `api_call_count == [1, 1]` can never
    re-evaluate the turn (no second Jev call, no duplicate telemetry). Turns with a
    missing `api_call_count` or a missing turn ID are never eligible. Bare numbers
-   (phones, OTP codes, menu replies) and confirmation replies never become candidates.
+   (phones, OTP codes, menu replies), unspaced phone-shaped fragments such as
+   `98765-4321`, and confirmation replies never become candidates.
 3. A conservative local detector proposes candidate handlers. No candidates, slash
    commands, code blocks, URLs, credential-shaped strings, shell metacharacters, action
    requests, or oversized input → straight to `next_call(request)` with no Jev call.
@@ -239,9 +240,12 @@ automatically when the Hermes source tree is not importable.
 Static verification is mandatory for release and runs `python scripts/check_forbidden_patterns.py`
 (fails on `eval`/`exec`/subprocess/shell/dynamic-import/forbidden-hook patterns in runtime
 code) plus `scripts/skillspector_gate.sh`, which scans every executable/plugin runtime
-scope (`jev_fastpath/`, `scripts/`) with SkillSpector `--no-llm` and fails on scanner
-errors or any CRITICAL finding. The runtime package currently scans with no critical
-findings; the two advisory signals are intentional, spec-mandated behavior: the TypeSafe
+scope (`jev_fastpath/`, `scripts/`) with SkillSpector `--no-llm --format json` (pinned to
+`skillspector==2.5.3` in CI) and fails on scanner errors or any CRITICAL finding parsed
+from the JSON report by `scripts/skillspector_findings.py` — the scanner's exit code alone
+only signals execution errors, so the report is the gating signal. The runtime package
+currently scans with no critical findings; the two advisory signals are intentional,
+spec-mandated behavior: the TypeSafe
 endpoint constant in `jev.py` (E1) and the required credential read (E2), which is
 resolved through the Hermes secret scope and only sent as the authorization header to
 that endpoint. The SkillSpector **root scan is not authoritative for this repository**:

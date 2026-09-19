@@ -14,7 +14,7 @@ Reduce net model cost and latency for simple requests that do not require genera
 
 1. The implementation is a standalone Hermes plugin. It must not patch the Hermes checkout.
 2. The plugin registers exactly one behavior-changing surface: `llm_execution` middleware.
-3. The plugin examines only the first LLM attempt of a turn (`api_call_count == 0`). Tool rounds, retries, fallback calls, and continuation calls always use `next_call(request)`.
+3. The plugin examines only the first LLM attempt of a turn (`api_call_count == 1`; Hermes counts attempts 1-based and increments before the call, so retries/fallbacks can re-deliver the same count). Tool rounds, retries, fallback calls, and continuation calls always use `next_call(request)`, and the per-turn claim in item 7 makes a re-delivered first attempt fall through instead of evaluating twice.
 4. A cheap deterministic candidate detector runs before Jev. If no installed handler can possibly handle the text, the plugin must not call Jev and must immediately call `next_call(request)`.
 5. Jev may select only one handler ID from the candidate detector's allowlist or `normal_llm`.
 6. Jev output is advisory input to a strict local validator. It can never produce shell, Python, URLs, tool names, files, commands, or free-form response text.
@@ -27,7 +27,8 @@ Reduce net model cost and latency for simple requests that do not require genera
      ID are never eligible);
    - the current user input is non-empty plain text;
    - at least one deterministic candidate exists (an explicit arithmetic operator is
-     required for the calculator — bare numbers are never candidates);
+     required for the calculator — bare numbers are never candidates, and an unspaced
+     phone-shaped fragment such as `98765-4321` is never arithmetic);
    - Jev returns a known handler ID;
    - Jev choice confidence is at least `0.92` by default;
    - Jev's typed short-circuit `noul` is at least `0.90` by default;
