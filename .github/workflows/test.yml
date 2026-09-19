@@ -50,6 +50,9 @@ jobs:
       - name: Plugin doctor
         run: hermes plugins doctor . --ci
 
+      - name: Plugin catalog validation
+        run: hermes plugins validate .
+
       - name: Forbidden implementation patterns
         run: python scripts/check_forbidden_patterns.py
 

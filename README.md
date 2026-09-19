@@ -80,7 +80,7 @@ plugins:
     jev-fastpath:
       enabled: true
       settings:
-        mode: shadow                # off | shadow | active — shadow is the default
+        mode: "shadow"              # "off" | "shadow" | "active" — ALWAYS quote the value
         confidence_threshold: 0.92  # minimum Jev choice confidence [0, 1]
         short_circuit_threshold: 0.90
         timeout_seconds: 3.0        # 0.2 – 10.0
@@ -94,6 +94,16 @@ plugins:
           - acknowledgement
           - fastpath_status
 ```
+
+**YAML quoting matters:** YAML 1.1 parses a bare `off` (also `yes`/`on`) as a boolean, not
+a string. The plugin refuses to coerce it — it logs one warning and stays disabled — so
+always quote the mode value (`mode: "off"`). Settings are read once when the plugin
+registers at gateway start: **every settings change, including mode changes, requires
+restarting that profile's gateway to take effect.**
+
+Keep development virtualenvs OUTSIDE this directory: `hermes plugins validate` runs a
+security scan over the whole plugin tree, and a `.venv`/`.git` checkout inside it poisons
+the scan (and bloats installs).
 
 Invalid settings emit one bounded warning and disable the fast path (the plugin stays
 discovered and Hermes keeps booting normally).
@@ -152,11 +162,36 @@ Then, on that one profile:
 
 ## Rollback
 
-1. Set `mode: off` in the plugin settings (fast path disabled immediately).
-2. Remove `jev-fastpath` from `plugins.enabled` (full unenroll).
-3. Restart only the affected profile's gateway.
+Settings are loaded once at plugin registration, so every step below ends with a gateway
+restart of ONLY the affected profile:
+
+1. Edit the profile's `config.yaml` and set the mode to the quoted string `"off"`
+   (a bare `off` is parsed by YAML as a boolean and the plugin refuses it):
+
+   ```yaml
+   plugins:
+     entries:
+       jev-fastpath:
+         enabled: true
+         settings:
+           mode: "off"
+   ```
+
+   Restart only that profile's gateway; the fast path is now inert (every turn goes to
+   the provider exactly once).
+
+2. Full unenroll: remove `jev-fastpath` from `plugins.enabled` (or
+   `hermes plugins disable jev-fastpath` / remove the installed plugin directory).
+
+3. Restart only the affected profile's gateway again.
+
 4. Verify the gateway came back with a **new PID** and `/health` is green, and that a
-   normal turn answers via the provider.
+   normal turn answers via the provider:
+
+   ```bash
+   systemctl --user status hermes-<profile>   # record the new PID
+   curl -s localhost:8642/health              # adjust to the profile's gateway port
+   ```
 
 ## Development
 

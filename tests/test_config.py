@@ -140,3 +140,31 @@ def test_settings_are_frozen():
     settings = load_settings(FakeContext())
     with pytest.raises(Exception):
         settings.mode = "active"
+
+
+def test_yaml_unquoted_off_is_a_bool_and_is_rejected():
+    # YAML 1.1: bare `off` parses as bool False. The plugin must refuse to coerce it.
+    import yaml
+
+    values = yaml.safe_load("mode: off\n")
+    assert values["mode"] is False
+    with pytest.raises(SettingsError):
+        load_settings(FakeContext(values))
+
+
+def test_yaml_quoted_off_is_accepted():
+    import yaml
+
+    values = yaml.safe_load("mode: 'off'\n")
+    assert values["mode"] == "off"
+    assert load_settings(FakeContext(values)).mode == "off"
+
+
+def test_yaml_unquoted_yes_and_on_also_rejected():
+    import yaml
+
+    for raw in ("mode: yes\n", "mode: on\n"):
+        values = yaml.safe_load(raw)
+        assert isinstance(values["mode"], bool)
+        with pytest.raises(SettingsError):
+            load_settings(FakeContext(values))
