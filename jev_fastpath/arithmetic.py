@@ -117,6 +117,21 @@ def _eval_node(node: ast.AST) -> int | float:
     raise _reject("unsupported syntax")
 
 
+def has_binary_operator(expression: str) -> bool:
+    """True when the parsed expression performs at least one binary operation.
+
+    Bare numbers (phone numbers, OTP codes, menu replies) must never become calculator
+    candidates, so an explicit operator is required before Jev ever sees the text.
+    """
+    if not isinstance(expression, str) or not expression.strip():
+        return False
+    try:
+        tree = ast.parse(expression, mode="eval")
+    except (SyntaxError, ValueError, RecursionError):
+        return False
+    return any(isinstance(node, ast.BinOp) for node in ast.walk(tree))
+
+
 def evaluate_expression(expression: str) -> int | float:
     """Parse with ``ast.parse(..., mode='eval')``, validate every node, then evaluate recursively."""
     if not isinstance(expression, str) or not expression.strip():

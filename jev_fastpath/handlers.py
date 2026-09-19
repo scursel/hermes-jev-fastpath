@@ -63,20 +63,17 @@ _IDENTITY_PATTERNS = {
     ),
     "platform": (
         re.compile(r"(?i)^\s*(?:qual|que|which|what)(?:\s+(?:e|é|is|'s))?\s+(?:a\s+|o\s+|seu\s+|your\s+|this\s+|the\s+)?"
-                   r"plataforma\b(?:\s+[ée]\s+(?:esta|ess a|this))?\s*\??\s*$"),
+                   r"plataforma\b\s*\??\s*$"),
         re.compile(r"(?i)^\s*what\s+platform\s+is\s+(?:this|it)\s*\??\s*$"),
     ),
 }
 
+# Gratitude only (audit decision 1): go-ahead/approval words ("ok", "certo", "beleza",
+# "combinado", "perfeito", "sounds good", "roger that", …) are context-dependent replies
+# to an assistant question or proposal and must fall through to the real LLM.
 _ACK_GRATITUDE = frozenset({
-    "obrigado", "obrigada", "obrigadao", "brigado", "brigada", "valeu", "vlw", "brigadinho",
+    "obrigado", "obrigada", "obrigadao", "brigado", "brigada", "valeu", "vlw",
     "thanks", "thank", "thank you", "thankyou", "thx", "ty", "tks",
-})
-_ACK_CONFIRMATION = frozenset({
-    "ok", "okay", "okey", "k", "entendi", "entendido", "certo", "certeza", "beleza", "blz",
-    "combinado", "fechou", "fechado", "perfeito", "show", "legal", "bacana", "massa",
-    "got it", "gotcha", "understood", "roger", "roger that", "sounds good", "noted", "copy that",
-    "de nada", "you're welcome", "youre welcome", "no problem", "np", "cool", "nice", "great",
 })
 _TRAILING_PUNCTUATION = "!!.,;:...)\"'"
 
@@ -113,14 +110,16 @@ def classify_identity_fields(text: str) -> tuple[str, ...]:
 
 
 def classify_acknowledgement(text: str) -> str | None:
-    """``gratitude`` or ``confirmation`` for an exact allowlisted acknowledgement, else ``None``."""
+    """``gratitude`` for an exact allowlisted gratitude, else ``None``.
+
+    Confirmation/go-ahead words are deliberately excluded: as replies to an assistant
+    question or proposal they are context-dependent and must reach the real LLM.
+    """
     normalized = _normalize(text)
     if not normalized:
         return None
     if normalized in _ACK_GRATITUDE:
         return "gratitude"
-    if normalized in _ACK_CONFIRMATION:
-        return "confirmation"
     return None
 
 
@@ -143,9 +142,7 @@ def classify_status_request(text: str) -> bool:
 
 _ACK_TEXT = {
     ("gratitude", "pt-BR"): "Por nada! Se precisar de outra coisa, é só falar.",
-    ("confirmation", "pt-BR"): "Anotado! Estou por aqui se precisar.",
     ("gratitude", "en"): "You're welcome! Let me know if you need anything else.",
-    ("confirmation", "en"): "Got it. I'm here if you need anything else.",
 }
 
 

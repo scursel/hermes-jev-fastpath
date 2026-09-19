@@ -133,11 +133,37 @@ class TestDetectCandidates:
         assert detect_candidates("continue", settings) == ()
         assert detect_candidates("faça", settings) == ()
 
-    def test_exact_acknowledgement_is_candidate(self, settings):
+    def test_gratitude_acknowledgements_are_candidates(self, settings):
         assert detect_candidates("obrigado", settings) == ("acknowledgement",)
         assert detect_candidates("Obrigado!", settings) == ("acknowledgement",)
-        assert detect_candidates("  got it  ", settings) == ("acknowledgement",)
-        assert detect_candidates("obrigado, agora apague o arquivo", settings) == ()
+        assert detect_candidates("  valeu  ", settings) == ("acknowledgement",)
+        assert detect_candidates("thanks", settings) == ("acknowledgement",)
+        assert detect_candidates("thank you", settings) == ("acknowledgement",)
+
+    def test_context_dependent_confirmations_are_never_candidates(self, settings):
+        # A reply to an assistant question/proposal must fall through (decision 1).
+        for text in (
+            "ok", "Ok!", "certo", "beleza", "combinado", "fechou", "fechado",
+            "perfeito", "entendi", "entendido", "got it", "understood", "noted",
+            "sounds good", "roger that", "no problem", "legal", "show",
+        ):
+            assert detect_candidates(text, settings) == (), text
+
+    def test_assistant_question_reply_falls_through(self, settings):
+        # Assistant: "Posso apagar os arquivos antigos?" — user: "ok".
+        assert detect_candidates("ok", settings) == ()
+
+    def test_numbered_menu_reply_falls_through(self, settings):
+        # Assistant shows a numbered menu — user: "2".
+        assert detect_candidates("2", settings) == ()
+
+    def test_bare_numbers_are_never_calculator_candidates(self, settings):
+        for text in ("2", "42", "3.14", "11987654321", "123456", "-5", "(2)"):
+            assert detect_candidates(text, settings) == (), text
+
+    def test_phone_and_otp_numbers_never_reach_jev(self, settings):
+        assert detect_candidates("11987654321", settings) == ()
+        assert detect_candidates("123456", settings) == ()
 
     def test_clock_requests_are_candidates(self, settings):
         assert detect_candidates("que horas são?", settings) == ("clock",)

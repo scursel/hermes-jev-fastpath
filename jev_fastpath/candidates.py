@@ -8,7 +8,12 @@ from __future__ import annotations
 
 import re
 
-from .arithmetic import ArithmeticRejected, evaluate_expression, extract_expression
+from .arithmetic import (
+    ArithmeticRejected,
+    evaluate_expression,
+    extract_expression,
+    has_binary_operator,
+)
 from .config import KNOWN_HANDLERS
 from .handlers import (
     classify_acknowledgement,
@@ -30,7 +35,11 @@ _REJECT_PATTERNS = (
 
 def _is_calculator_request(text: str) -> bool:
     try:
-        evaluate_expression(extract_expression(text))
+        expression = extract_expression(text)
+        if not has_binary_operator(expression):
+            # Bare numbers (phone numbers, OTP codes, menu replies) are never arithmetic.
+            return False
+        evaluate_expression(expression)
     except ArithmeticRejected:
         return False
     return True

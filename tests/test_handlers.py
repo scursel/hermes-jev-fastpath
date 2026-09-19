@@ -111,13 +111,23 @@ class TestAcknowledgement:
         [
             ("obrigado", "Por nada! Se precisar de outra coisa, é só falar."),
             ("Valeu!", "Por nada! Se precisar de outra coisa, é só falar."),
-            ("ok", "Anotado! Estou por aqui se precisar."),
-            ("entendi", "Anotado! Estou por aqui se precisar."),
+            ("thanks", "Por nada! Se precisar de outra coisa, é só falar."),
         ],
     )
-    def test_fixed_responses(self, settings, text, expected):
+    def test_gratitude_responses_are_fixed(self, settings, text, expected):
         result = render_handler("acknowledgement", text, CONTEXT, settings, _status())
         assert result.text == expected
+
+    @pytest.mark.parametrize(
+        "text",
+        ["ok", "entendi", "got it", "certo", "beleza", "combinado", "perfeito",
+         "sounds good", "roger that", "no problem", "legal", "show"],
+    )
+    def test_confirmation_words_reject(self, settings, text):
+        # Gratitude-only fast path (audit decision 1): go-ahead/approval replies to an
+        # assistant question or proposal must fall through to the real LLM.
+        with pytest.raises(HandlerRejected):
+            render_handler("acknowledgement", text, CONTEXT, settings, _status())
 
     def test_english_locale(self):
         from jev_fastpath.config import Settings
@@ -125,8 +135,6 @@ class TestAcknowledgement:
         en_settings = Settings(locale="en")
         result = render_handler("acknowledgement", "thanks", CONTEXT, en_settings, _status())
         assert result.text == "You're welcome! Let me know if you need anything else."
-        result = render_handler("acknowledgement", "got it", CONTEXT, en_settings, _status())
-        assert result.text == "Got it. I'm here if you need anything else."
 
 
 class TestFastpathStatus:
