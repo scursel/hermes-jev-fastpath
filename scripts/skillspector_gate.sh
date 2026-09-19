@@ -18,7 +18,8 @@ set -uo pipefail
 
 if ! command -v skillspector >/dev/null 2>&1; then
     echo "skillspector is required for the release gate but is not installed." >&2
-    echo "Install it (e.g.: uv tool install skillspector==2.5.3 || pip install skillspector==2.5.3)" >&2
+    echo "Install v2.5.3 from its immutable source commit (not PyPI), e.g.:" >&2
+    echo "uv tool install 'skillspector @ git+https://github.com/NVIDIA/skillspector.git@0562b964ec5ceac67ee15c163738e5404f14a908'" >&2
     exit 1
 fi
 

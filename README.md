@@ -240,8 +240,9 @@ automatically when the Hermes source tree is not importable.
 Static verification is mandatory for release and runs `python scripts/check_forbidden_patterns.py`
 (fails on `eval`/`exec`/subprocess/shell/dynamic-import/forbidden-hook patterns in runtime
 code) plus `scripts/skillspector_gate.sh`, which scans every executable/plugin runtime
-scope (`jev_fastpath/`, `scripts/`) with SkillSpector `--no-llm --format json` (pinned to
-`skillspector==2.5.3` in CI) and fails on scanner errors or any CRITICAL finding parsed
+scope (`jev_fastpath/`, `scripts/`) with SkillSpector `--no-llm --format json` (v2.5.3,
+pinned in CI to immutable source commit `0562b964ec5ceac67ee15c163738e5404f14a908`; it is
+not published on PyPI) and fails on scanner errors or any CRITICAL finding parsed
 from the JSON report by `scripts/skillspector_findings.py` — the scanner's exit code alone
 only signals execution errors, so the report is the gating signal. The runtime package
 currently scans with no critical findings; the two advisory signals are intentional,
