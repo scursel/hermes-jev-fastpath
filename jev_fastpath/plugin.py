@@ -226,6 +226,7 @@ class FastPathRuntime:
                 confidence=decision.confidence,
                 short_circuit_probability=decision.short_circuit_probability,
                 latency_ms=decision.latency_ms, usage=decision.usage,
+                answer=rendered.text,
             ), context)
             return downstream()
 
@@ -236,6 +237,7 @@ class FastPathRuntime:
             confidence=decision.confidence,
             short_circuit_probability=decision.short_circuit_probability,
             latency_ms=decision.latency_ms, usage=decision.usage,
+            answer=rendered.text,
         ), context)
         return response
 

@@ -46,3 +46,4 @@ class TelemetryEvent:
     short_circuit_probability: float | None = None
     latency_ms: int = 0
     usage: dict[str, Any] = field(default_factory=dict)
+    answer: str = ""

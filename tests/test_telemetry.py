@@ -76,9 +76,10 @@ def test_record_contains_fixed_field_set(records):
     row = read()[0]
     expected = {
         "ts", "mode", "session_hash", "turn_hash", "platform", "provider", "model",
-        "api_mode", "text_hash", "text_preview", "candidates", "selected_handler",
-        "confidence", "short_circuit_probability", "latency_ms", "outcome", "reason",
-        "provider_call_avoided", "usage",
+        "api_mode", "text_hash", "text_length", "text_preview", "candidates",
+        "selected_handler", "confidence", "short_circuit_probability", "latency_ms",
+        "outcome", "reason", "provider_call_avoided", "usage",
+        "answer_hash", "answer_preview",
     }
     assert set(row) == expected
 
@@ -131,6 +132,93 @@ def test_provider_call_avoided_only_for_short_circuit(records):
     rows = read()
     assert rows[0]["provider_call_avoided"] is False
     assert rows[1]["provider_call_avoided"] is True
+
+
+def test_no_candidate_rows_store_hash_and_length_but_no_preview(records):
+    writer, read = records
+    text = "quanto é 2 + 2?"
+    writer.write(_event(outcome="no_candidate", text=text), _context())
+    row = read()[0]
+    assert row["text_preview"] == ""
+    assert row["text_length"] == len(text)
+    assert len(row["text_hash"]) == 16
+
+
+def test_candidate_rows_store_bounded_preview(records):
+    writer, read = records
+    writer.write(_event(outcome="normal_llm", text="y" * 5000), _context())
+    row = read()[0]
+    assert 0 < len(row["text_preview"]) <= 160
+    assert row["text_length"] == 5000
+
+
+def test_shadow_and_active_rows_carry_answer_evidence(records):
+    writer, read = records
+    writer.write(_event(outcome="would_short_circuit", text="2 + 2", answer="2 + 2 = 4"), _context())
+    writer.write(_event(outcome="short_circuit", text="2 + 2", answer="2 + 2 = 4"), _context())
+    writer.write(_event(outcome="no_candidate", text="hello"), _context())
+    rows = read()
+    assert rows[0]["answer_preview"] == "2 + 2 = 4"
+    assert len(rows[0]["answer_hash"]) == 16
+    assert rows[1]["answer_preview"] == "2 + 2 = 4"
+    assert rows[2]["answer_preview"] == ""
+    assert rows[2]["answer_hash"] == ""
+
+
+def test_rotation_keeps_a_single_bounded_backup(tmp_path):
+    writer = TelemetryWriter(tmp_path, max_bytes=2000)
+    for index in range(40):
+        writer.write(
+            _event(outcome="normal_llm", text=f"turn {index} " + "z" * 200), _context()
+        )
+    current = tmp_path / "artifacts" / "jev_fastpath" / "decisions.jsonl"
+    backup = tmp_path / "artifacts" / "jev_fastpath" / "decisions.jsonl.1"
+    assert backup.exists()
+    assert current.stat().st_size <= 2000 + 400
+    lines = current.read_text(encoding="utf-8").splitlines()
+    assert all(json.loads(line) for line in lines)
+
+
+def test_log_file_has_restrictive_permissions(tmp_path):
+    writer = TelemetryWriter(tmp_path)
+    writer.write(_event(), _context())
+    path = tmp_path / "artifacts" / "jev_fastpath" / "decisions.jsonl"
+    assert (path.stat().st_mode & 0o777) == 0o600
+
+
+def test_credential_pattern_coverage(records):
+    writer, read = records
+    samples = (
+        "stripe key sk_live_abcdefghijklmnopqrst",
+        "pk_live_abcdefghijklmnopqrst",
+        "github token ghp_abcdefghijklmnopqrstuvwx",
+        "github_pat_11AAAAAAA0abcdefghijklmnopqrstuv",
+        "key AIzaSyA-1234567890abcdefghijklmnopqrstu",
+        "-----BEGIN PRIVATE KEY-----",
+        "aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+        "the password is hunter2 with spaces",
+    )
+    for sample in samples:
+        writer.write(_event(outcome="normal_llm", text=sample), _context())
+    serialized = json.dumps(read())
+    for secret in (
+        "sk_live_abcdefghijklmnopqrst", "pk_live_abcdefghijklmnopqrst",
+        "ghp_abcdefghijklmnopqrstuvwx", "github_pat_11AAAAAAA0",
+        "AIzaSyA-1234567890", "wJalrXUtnFEMI", "hunter2",
+        "BEGIN PRIVATE KEY",
+    ):
+        assert secret not in serialized, secret
+
+
+def test_redaction_is_bounded_for_megabyte_input():
+    import time
+
+    text = "x" * (1024 * 1024) + " password: hunter2"
+    started = time.monotonic()
+    out = redact(text)
+    elapsed = time.monotonic() - started
+    assert elapsed < 2.0  # bounded, CI-safe
+    assert "hunter2" not in out[:200]
 
 
 def test_concurrent_appends_produce_valid_lines(tmp_path):

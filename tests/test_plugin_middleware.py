@@ -206,6 +206,22 @@ class TestFailOpenPaths:
         downstream.assert_called_once_with(_request())
         assert telemetry.events[-1][0].outcome == "fallback"
 
+    def test_fallback_reason_uses_jev_reason_code(self, downstream):
+        from jev_fastpath.jev import JevError
+
+        telemetry = TelemetryRecorder()
+        runtime = FastPathRuntime(
+            Settings(mode="active"),
+            classifier=Mock(side_effect=JevError("TypeSafe deadline exceeded", code="timeout")),
+            telemetry=telemetry,
+        )
+        downstream = Mock(return_value=object())
+        runtime.middleware(request=_request(), next_call=downstream, api_call_count=1, **_context())
+        downstream.assert_called_once()
+        event = telemetry.events[-1][0]
+        assert event.outcome == "fallback"
+        assert event.reason == "timeout"  # bounded non-secret reason code (audit L2)
+
     def test_provider_exception_is_not_swallowed_or_duplicated(self, runtime):
         runtime.classifier = lambda *a: _decision(handler="normal_llm")
         downstream = Mock(side_effect=RuntimeError("provider down"))
