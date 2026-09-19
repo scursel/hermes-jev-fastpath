@@ -100,11 +100,23 @@ class TestFailOpenPaths:
         downstream.assert_called_once()
 
     def test_retry_round_bypasses(self, runtime, downstream):
+        # Hermes counts attempts 1-based; the second attempt of a turn (tool round,
+        # retry, fallback, or continuation) is api_call_count >= 2 and must bypass.
         downstream = Mock(return_value=object())
         runtime.middleware(
-            request=_request(), next_call=downstream, api_call_count=1, **_context()
+            request=_request(), next_call=downstream, api_call_count=2, **_context()
         )
         downstream.assert_called_once()
+
+    def test_first_attempt_is_eligible_one_based(self, runtime, downstream):
+        # Regression: Hermes increments api_call_count BEFORE the call, so the first
+        # attempt of a turn arrives as api_call_count == 1, not 0.
+        downstream = Mock(side_effect=AssertionError("provider must not run"))
+        response = runtime.middleware(
+            request=_request(), next_call=downstream, api_call_count=1, **_context()
+        )
+        downstream.assert_not_called()
+        assert response.choices[0].message.content == "2 + 2 = 4"
 
     def test_unsupported_api_mode_falls_through_without_jev(self, downstream):
         telemetry = TelemetryRecorder()

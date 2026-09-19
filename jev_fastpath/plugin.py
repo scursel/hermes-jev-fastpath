@@ -66,9 +66,15 @@ class FastPathRuntime:
         if self.telemetry is not None:
             self.telemetry.write(event, meta)
 
-    def middleware(self, *, request, next_call: Callable, api_call_count: int = 0,
+    def middleware(self, *, request, next_call: Callable, api_call_count: int = 1,
                    session_id: str = "", turn_id: str = "", api_mode: str = "", **context: Any):
-        """``llm_execution`` middleware callback; accepts ``**kwargs`` for forward compatibility."""
+        """``llm_execution`` middleware callback; accepts ``**kwargs`` for forward compatibility.
+
+        Hermes counts provider attempts 1-based: ``api_call_count == 1`` is the first
+        attempt of a turn; tool rounds, retries, fallbacks, and continuations arrive with
+        ``>= 2`` and bypass the fast path (agent/turn_iteration_prep.py increments the
+        counter before the call).
+        """
         downstream_called = False
 
         def downstream():
@@ -110,7 +116,9 @@ class FastPathRuntime:
     def _evaluate_or_fallthrough(self, *, request, downstream: Callable, api_call_count,
                                  session_id: str, turn_id: str, api_mode: str,
                                  context: Mapping[str, Any]):
-        if self.settings.mode == "off" or int(api_call_count or 0) != 0:
+        # Only the first provider attempt of a turn is eligible (Hermes counts 1-based);
+        # tool rounds, retries, fallbacks, and continuations always see count >= 2.
+        if self.settings.mode == "off" or int(api_call_count or 0) != 1:
             return downstream()
         text = extract_latest_user_text(request, api_mode)
         if text is None:
