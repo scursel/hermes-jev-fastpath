@@ -1,8 +1,11 @@
 name: test
 
-# Hermes source used by CI: the pinned PyPI release `hermes-agent==0.21.3` (matching the
-# plugin's `requires_hermes: ">=0.21.3"`). The pytest environment comes from this repo's
-# `[test]` extra, which pins pytest>=8,<9 as declared.
+# Hermes source used by CI: the immutable upstream commit
+# `7c6f21a5e12ba9b1c674ec9b410fa6b8c45de4f8` (Hermes Agent v0.21.3), matching
+# the checkout used for local host-contract tests and the plugin's
+# `requires_hermes: ">=0.21.3"`. PyPI currently stops at 0.19.0, so CI must not
+# pretend `hermes-agent==0.21.3` exists there. The pytest environment comes from
+# this repo's `[test]` extra, which pins pytest>=8,<9 as declared.
 
 on:
   push:
@@ -30,8 +33,10 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install test dependencies and Hermes Agent
-        run: python -m pip install -e '.[test]' hermes-agent==0.21.3
+      - name: Install test dependencies and pinned Hermes Agent source
+        run: |
+          python -m pip install -e '.[test]'
+          python -m pip install 'hermes-agent @ git+https://github.com/NousResearch/hermes-agent.git@7c6f21a5e12ba9b1c674ec9b410fa6b8c45de4f8'
 
       - name: Byte-compile
         run: python -m compileall -q jev_fastpath scripts __init__.py
