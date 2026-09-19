@@ -66,17 +66,17 @@ def downstream():
 
 class TestActiveAcceptance:
     def test_active_acceptance_skips_provider(self, runtime, downstream):
-        response = runtime.middleware(request=_request(), next_call=downstream, **_context())
+        response = runtime.middleware(request=_request(), next_call=downstream, api_call_count=1, **_context())
         downstream.assert_not_called()
         assert response.choices[0].message.content == "2 + 2 = 4"
 
     def test_next_call_receives_original_request(self, runtime, downstream):
         request = _request()
-        runtime.middleware(request=request, next_call=downstream, **_context())
+        runtime.middleware(request=request, next_call=downstream, api_call_count=1, **_context())
         downstream.assert_not_called()
 
     def test_acceptance_emits_short_circuit_telemetry(self, runtime, downstream):
-        runtime.middleware(request=_request(), next_call=downstream, **_context())
+        runtime.middleware(request=_request(), next_call=downstream, api_call_count=1, **_context())
         event, meta = runtime.telemetry.events[-1]
         assert event.outcome == "short_circuit"
         assert event.selected_handler == "calculator"
@@ -90,14 +90,14 @@ class TestFailOpenPaths:
         runtime.classifier = Mock(side_effect=TimeoutError("slow"))
         downstream_response = object()
         downstream = Mock(return_value=downstream_response)
-        assert runtime.middleware(request=_request(), next_call=downstream, **_context()) is downstream_response
+        assert runtime.middleware(request=_request(), next_call=downstream, api_call_count=1, **_context()) is downstream_response
         downstream.assert_called_once_with(_request())
 
     def test_mode_off_bypasses_without_classifier(self, downstream):
         runtime = FastPathRuntime(Settings(mode="off"), classifier=Mock(side_effect=AssertionError))
         response = object()
         downstream = Mock(return_value=response)
-        assert runtime.middleware(request=_request(), next_call=downstream, **_context()) is response
+        assert runtime.middleware(request=_request(), next_call=downstream, api_call_count=1, **_context()) is response
         downstream.assert_called_once()
 
     def test_retry_round_bypasses(self, runtime, downstream):
@@ -135,7 +135,7 @@ class TestFailOpenPaths:
             Settings(mode="active"), classifier=Mock(side_effect=AssertionError), telemetry=telemetry,
         )
         downstream = Mock(return_value=object())
-        runtime.middleware(request=_request("fale sobre arte moderna"), next_call=downstream, **_context())
+        runtime.middleware(request=_request("fale sobre arte moderna"), next_call=downstream, api_call_count=1, **_context())
         downstream.assert_called_once()
         assert telemetry.events[0][0].outcome == "no_candidate"
 
@@ -147,7 +147,7 @@ class TestFailOpenPaths:
             telemetry=telemetry,
         )
         downstream = Mock(return_value=object())
-        runtime.middleware(request=_request(), next_call=downstream, **_context())
+        runtime.middleware(request=_request(), next_call=downstream, api_call_count=1, **_context())
         downstream.assert_called_once()
         event = telemetry.events[0][0]
         assert event.outcome == "normal_llm"
@@ -159,7 +159,7 @@ class TestFailOpenPaths:
             telemetry=TelemetryRecorder(),
         )
         downstream = Mock(return_value=object())
-        runtime.middleware(request=_request(), next_call=downstream, **_context())
+        runtime.middleware(request=_request(), next_call=downstream, api_call_count=1, **_context())
         downstream.assert_called_once()
 
     def test_low_short_circuit_probability_falls_through(self, downstream):
@@ -168,7 +168,7 @@ class TestFailOpenPaths:
             telemetry=TelemetryRecorder(),
         )
         downstream = Mock(return_value=object())
-        runtime.middleware(request=_request(), next_call=downstream, **_context())
+        runtime.middleware(request=_request(), next_call=downstream, api_call_count=1, **_context())
         downstream.assert_called_once()
 
     def test_handler_rejection_falls_through(self, downstream):
@@ -179,7 +179,7 @@ class TestFailOpenPaths:
             telemetry=TelemetryRecorder(),
         )
         downstream = Mock(return_value=object())
-        runtime.middleware(request=_request(), next_call=downstream, **_context())
+        runtime.middleware(request=_request(), next_call=downstream, api_call_count=1, **_context())
         downstream.assert_called_once()
 
     def test_response_factory_rejection_falls_through(self, downstream):
@@ -190,7 +190,7 @@ class TestFailOpenPaths:
             telemetry=TelemetryRecorder(),
         )
         downstream = Mock(return_value=object())
-        runtime.middleware(request=_request(), next_call=downstream, **_context())
+        runtime.middleware(request=_request(), next_call=downstream, api_call_count=1, **_context())
         downstream.assert_called_once()
 
     def test_internal_exception_falls_through_once(self, monkeypatch, downstream):
@@ -202,7 +202,7 @@ class TestFailOpenPaths:
         runtime = FastPathRuntime(Settings(mode="active"), telemetry=telemetry)
         downstream_response = object()
         downstream = Mock(return_value=downstream_response)
-        assert runtime.middleware(request=_request(), next_call=downstream, **_context()) is downstream_response
+        assert runtime.middleware(request=_request(), next_call=downstream, api_call_count=1, **_context()) is downstream_response
         downstream.assert_called_once_with(_request())
         assert telemetry.events[-1][0].outcome == "fallback"
 
@@ -210,7 +210,7 @@ class TestFailOpenPaths:
         runtime.classifier = lambda *a: _decision(handler="normal_llm")
         downstream = Mock(side_effect=RuntimeError("provider down"))
         with pytest.raises(RuntimeError, match="provider down"):
-            runtime.middleware(request=_request(), next_call=downstream, **_context())
+            runtime.middleware(request=_request(), next_call=downstream, api_call_count=1, **_context())
         downstream.assert_called_once()
 
 
@@ -222,7 +222,9 @@ class TestShadowMode:
         )
         downstream_response = object()
         downstream = Mock(return_value=downstream_response)
-        result = runtime.middleware(request=_request(), next_call=downstream, **_context())
+        result = runtime.middleware(
+            request=_request(), next_call=downstream, api_call_count=1, **_context()
+        )
         assert result is downstream_response
         downstream.assert_called_once()
         event = telemetry.events[-1][0]
@@ -235,12 +237,25 @@ class TestShadowMode:
             Settings(mode="shadow"), classifier=_accepted_classifier(), renderer=renderer,
             telemetry=TelemetryRecorder(),
         )
-        runtime.middleware(request=_request(), next_call=downstream, **_context())
+        runtime.middleware(request=_request(), next_call=downstream, api_call_count=1, **_context())
         renderer.assert_called_once()
         assert renderer.call_args[0][0] == "calculator"
         assert renderer.call_args[0][1] == "2 + 2"
         status = renderer.call_args[0][4]
         assert status["mode"] == "shadow"
+
+    def test_injected_now_fn_reaches_renderer_not_context(self, downstream):
+        # The clock seam is an explicit runtime dependency, never a Hermes-context override.
+        renderer = Mock(return_value="2 + 2 = 4")
+        clock = Mock(return_value="now")
+        runtime = FastPathRuntime(
+            Settings(mode="shadow"), classifier=_accepted_classifier(), renderer=renderer,
+            telemetry=TelemetryRecorder(), now_fn=clock,
+        )
+        context = _context(now_fn="hostile-injection-attempt")
+        runtime.middleware(request=_request(), next_call=downstream, api_call_count=1, **context)
+        renderer.assert_called_once()
+        assert renderer.call_args.kwargs["now_fn"] is clock
 
 
 class TestDecisionCache:
@@ -251,34 +266,39 @@ class TestDecisionCache:
             Settings(mode="active"), classifier=_accepted_classifier(calls), cache=cache,
             telemetry=TelemetryRecorder(),
         )
-        first = runtime.middleware(request=_request(), next_call=downstream, **_context())
-        second = runtime.middleware(request=_request(), next_call=downstream, **_context())
-        # One Jev classification, two rendered fast paths, zero provider calls.
+        first = runtime.middleware(request=_request(), next_call=downstream, api_call_count=1, **_context())
+        # Second invocation for the SAME turn (retry/restart shape): the per-turn claim
+        # makes it fall through to the provider without a second Jev call.
+        second = runtime.middleware(request=_request(), next_call=downstream, api_call_count=1, **_context())
         assert len(calls) == 1
-        assert downstream.call_count == 0
+        assert downstream.call_count == 1
         assert first.choices[0].message.content == "2 + 2 = 4"
-        assert second.choices[0].message.content == "2 + 2 = 4"
+        assert second is not first.choices  # the provider response came from downstream
 
-    def test_different_text_misses_cache(self, downstream):
+    def test_different_turns_and_texts_miss_cache(self, downstream):
         calls = []
         runtime = FastPathRuntime(
             Settings(mode="active"), classifier=_accepted_classifier(calls),
             telemetry=TelemetryRecorder(),
         )
-        runtime.middleware(request=_request("2 + 2"), next_call=downstream, **_context())
-        runtime.middleware(request=_request("3 + 3"), next_call=downstream, **_context())
+        runtime.middleware(request=_request("2 + 2"), next_call=downstream, api_call_count=1, **_context())
+        runtime.middleware(
+            request=_request("3 + 3"), next_call=downstream, api_call_count=1, **_context(turn_id="t2")
+        )
         assert len(calls) == 2
 
-    def test_missing_identity_never_caches(self, downstream):
+    def test_missing_identity_is_ineligible_not_uncached(self, downstream):
         calls = []
         runtime = FastPathRuntime(
             Settings(mode="active"), classifier=_accepted_classifier(calls),
             telemetry=TelemetryRecorder(),
         )
         context = _context(session_id="", turn_id="")
-        runtime.middleware(request=_request(), next_call=downstream, **context)
-        runtime.middleware(request=_request(), next_call=downstream, **context)
-        assert len(calls) == 2
+        runtime.middleware(request=_request(), next_call=downstream, api_call_count=1, **context)
+        runtime.middleware(request=_request(), next_call=downstream, api_call_count=1, **context)
+        # Without a turn ID the turn is never eligible, so Jev is never consulted.
+        assert calls == []
+        assert downstream.call_count == 2
 
     def test_concurrent_distinct_turns_each_call_provider_once(self, downstream):
         telemetry = TelemetryRecorder()
@@ -290,7 +310,7 @@ class TestDecisionCache:
 
         def _turn(turn):
             response = runtime.middleware(
-                request=_request(), next_call=downstream, **_context(turn_id=turn)
+                request=_request(), next_call=downstream, api_call_count=1, **_context(turn_id=turn)
             )
             with lock:
                 seen.append(response.choices[0].message.content)
@@ -308,7 +328,7 @@ class TestStatus:
         assert status["mode"] == "active"
         assert status["confidence_threshold"] == 0.92
         assert status["last_decision_at"] is None
-        runtime.middleware(request=_request(), next_call=downstream, **_context())
+        runtime.middleware(request=_request(), next_call=downstream, api_call_count=1, **_context())
         assert runtime.status()["last_decision_at"] is not None
 
 
@@ -358,6 +378,113 @@ class TestRegister:
         # Replace the real (credential-needing) classifier on the registered runtime.
         callback.__self__.classifier = _accepted_classifier()
         request = _request()
-        response = callback(request=request, next_call=downstream, **_context())
+        response = callback(request=request, next_call=downstream, api_call_count=1, **_context())
         downstream.assert_not_called()
         assert response.choices[0].message.content == "2 + 2 = 4"
+
+
+class TestTurnEligibility:
+    """H1: exactly one evaluation per (session_id, turn_id), regardless of api_call_count."""
+
+    def test_second_invocation_same_turn_never_re_evaluates(self):
+        calls, telemetry = [], TelemetryRecorder()
+        runtime = FastPathRuntime(
+            Settings(mode="active"), classifier=_accepted_classifier(calls), telemetry=telemetry,
+        )
+        downstream = Mock(return_value=object())
+        # Hermes can deliver api_call_count == [1, 1] across retries/restarts; only the
+        # FIRST middleware invocation for the turn may evaluate.
+        runtime.middleware(request=_request(), next_call=downstream, api_call_count=1, **_context())
+        second = runtime.middleware(request=_request(), next_call=downstream, api_call_count=1, **_context())
+        third = runtime.middleware(request=_request(), next_call=downstream, api_call_count=1, **_context())
+        assert len(calls) == 1             # Jev exactly once for the turn
+        assert downstream.call_count == 2  # invocations 2 and 3 fall through
+        assert second is not None and third is not None
+        assert len(telemetry.events) == 1  # no duplicate telemetry rows
+
+    def test_different_turn_evaluates_again(self):
+        calls = []
+        runtime = FastPathRuntime(
+            Settings(mode="active"), classifier=_accepted_classifier(calls),
+            telemetry=TelemetryRecorder(),
+        )
+        downstream = Mock(return_value=object())
+        runtime.middleware(request=_request(), next_call=downstream, api_call_count=1, **_context())
+        runtime.middleware(
+            request=_request(), next_call=downstream, api_call_count=1, **_context(turn_id="t2")
+        )
+        assert len(calls) == 2
+
+    def test_missing_turn_id_is_ineligible(self):
+        calls, telemetry = [], TelemetryRecorder()
+        runtime = FastPathRuntime(
+            Settings(mode="active"), classifier=_accepted_classifier(calls), telemetry=telemetry,
+        )
+        downstream = Mock(return_value=object())
+        runtime.middleware(
+            request=_request(), next_call=downstream, api_call_count=1, **_context(turn_id="")
+        )
+        downstream.assert_called_once()
+        assert calls == []
+        assert telemetry.events == []
+
+    def test_missing_api_call_count_is_ineligible(self):
+        # L3: an absent count must not imply the first attempt.
+        calls, telemetry = [], TelemetryRecorder()
+        runtime = FastPathRuntime(
+            Settings(mode="active"), classifier=_accepted_classifier(calls), telemetry=telemetry,
+        )
+        downstream = Mock(return_value=object())
+        runtime.middleware(request=_request(), next_call=downstream, **_context())
+        downstream.assert_called_once()
+        assert calls == []
+        assert telemetry.events == []
+
+    def test_claim_is_bounded_and_expires(self):
+        from jev_fastpath.plugin import TurnClaim
+
+        class Clock:
+            now = 0.0
+
+            def __call__(self):
+                return self.now
+
+        clock = Clock()
+        claims = TurnClaim(ttl_seconds=60.0, max_entries=2, monotonic=clock)
+        assert claims.claim("s1", "t1") is True
+        assert claims.claim("s1", "t1") is False          # already claimed
+        clock.now = 61.0                                   # TTL elapsed -> new turn generation
+        assert claims.claim("s1", "t1") is True
+        assert claims.claim("s1", "") is False             # empty turn never claimable
+        assert claims.claim("s1", "t2") is True
+        assert claims.claim("s2", "t3") is True            # bound: evicts the oldest entry
+        assert claims.claim("s1", "t1") is True
+
+    def test_claim_is_concurrency_safe(self):
+        from jev_fastpath.plugin import TurnClaim
+        from concurrent.futures import ThreadPoolExecutor
+
+        claims = TurnClaim()
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            results = list(pool.map(lambda _: claims.claim("s1", "t1"), range(32)))
+        assert results.count(True) == 1
+
+    def test_status_shows_prior_decision_not_current(self, downstream):
+        runtime = FastPathRuntime(
+            Settings(mode="active"), classifier=_accepted_classifier(),
+            telemetry=TelemetryRecorder(),
+        )
+        seen = []
+
+        def renderer(handler_id, text, context, settings, status, *, now_fn=None):
+            seen.append(status["last_decision_at"])
+            return "2 + 2 = 4"
+
+        runtime.renderer = renderer
+        runtime.middleware(request=_request(), next_call=downstream, api_call_count=1, **_context())
+        runtime.middleware(
+            request=_request(), next_call=downstream, api_call_count=1, **_context(turn_id="t2")
+        )
+        assert seen[0] is None                      # first render: no prior decision yet
+        assert seen[1] is not None                  # second render: shows the PRIOR decision
+        assert seen[1] < runtime.status()["last_decision_at"]

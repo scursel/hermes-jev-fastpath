@@ -3,12 +3,20 @@
 Every uncertainty or failure calls the wrapped provider exactly once; an accepted active
 fast path returns the raw synthetic response and never calls ``next_call``. Prior
 messages, system prompt, tools, and history are read-only here.
+
+Turn eligibility (audit H1): the FIRST middleware invocation for a
+``(session_id, turn_id)`` pair claims evaluation atomically; every later invocation for
+that turn — Hermes retries, fallbacks, and restarts can re-deliver ``api_call_count ==
+[1, 1]`` — falls straight through without Jev or duplicate telemetry. Turns without a
+turn ID are never eligible.
 """
 
 from __future__ import annotations
 
 import logging
 import threading
+import time
+from collections import OrderedDict
 from datetime import datetime, timezone
 from typing import Any, Callable, Mapping
 
@@ -23,6 +31,42 @@ from .telemetry import TelemetryWriter
 from .types import TelemetryEvent
 
 logger = logging.getLogger("jev_fastpath.plugin")
+
+
+class TurnClaim:
+    """Bounded, thread-safe per-turn eligibility registry.
+
+    Keys are ``(session_id, turn_id)``; the first claim wins and stays claimed until the
+    TTL elapses (long-lived gateway turns keep refreshing), so a retry or restart that
+    re-delivers the same turn can never be evaluated twice.
+    """
+
+    def __init__(self, ttl_seconds: float = 900.0, max_entries: int = 4096,
+                 monotonic=time.monotonic):
+        self._ttl = float(ttl_seconds)
+        self._max_entries = int(max_entries)
+        self._monotonic = monotonic
+        self._lock = threading.Lock()
+        self._entries: OrderedDict[tuple[str, str], float] = OrderedDict()
+
+    def claim(self, session_id: str, turn_id: str) -> bool:
+        if not turn_id:
+            return False
+        now = self._monotonic()
+        key = (str(session_id), str(turn_id))
+        with self._lock:
+            expired = [k for k, stamp in self._entries.items() if now - stamp >= self._ttl]
+            for k in expired:
+                self._entries.pop(k, None)
+            if key in self._entries:
+                # Refresh so a long-running turn stays claimed, but do not re-approve.
+                self._entries[key] = now
+                self._entries.move_to_end(key)
+                return False
+            self._entries[key] = now
+            while len(self._entries) > self._max_entries:
+                self._entries.popitem(last=False)
+            return True
 
 
 class FastPathRuntime:
@@ -41,6 +85,7 @@ class FastPathRuntime:
         response_factory: Callable = build_synthetic_response,
         telemetry: Any = None,
         cache: DecisionCache | None = None,
+        now_fn: Callable | None = None,
     ):
         self.settings = settings
         self.classifier = classifier
@@ -48,6 +93,8 @@ class FastPathRuntime:
         self.response_factory = response_factory
         self.telemetry = telemetry
         self.cache = cache or DecisionCache(settings.cache_ttl_seconds)
+        self.now_fn = now_fn
+        self._claims = TurnClaim()
         self._status_lock = threading.Lock()
         self._last_decision_at: str | None = None
 
@@ -66,14 +113,14 @@ class FastPathRuntime:
         if self.telemetry is not None:
             self.telemetry.write(event, meta)
 
-    def middleware(self, *, request, next_call: Callable, api_call_count: int = 1,
+    def middleware(self, *, request, next_call: Callable, api_call_count: int | None = None,
                    session_id: str = "", turn_id: str = "", api_mode: str = "", **context: Any):
         """``llm_execution`` middleware callback; accepts ``**kwargs`` for forward compatibility.
 
-        Hermes counts provider attempts 1-based: ``api_call_count == 1`` is the first
-        attempt of a turn; tool rounds, retries, fallbacks, and continuations arrive with
-        ``>= 2`` and bypass the fast path (agent/turn_iteration_prep.py increments the
-        counter before the call).
+        Hermes counts provider attempts 1-based, but retries/fallbacks/restarts can
+        re-deliver ``api_call_count == 1`` for the same turn, so the per-turn claim — not
+        the counter — decides eligibility. A missing count or a missing turn ID is never
+        eligible.
         """
         downstream_called = False
 
@@ -107,18 +154,28 @@ class FastPathRuntime:
                 raise
             self._emit(TelemetryEvent(
                 outcome="fallback",
-                reason=type(exc).__name__,
+                reason=getattr(exc, "code", None) or type(exc).__name__,
                 text="",
                 candidates=(),
             ), meta)
             return downstream()
 
+    def _eligible(self, api_call_count: Any, session_id: str, turn_id: str) -> bool:
+        """Mode/counter/turn-identity gate plus the atomic first-invocation claim."""
+        if self.settings.mode == "off":
+            return False
+        try:
+            count = int(api_call_count)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return False
+        if count != 1 or not turn_id.strip():
+            return False
+        return self._claims.claim(session_id, turn_id)
+
     def _evaluate_or_fallthrough(self, *, request, downstream: Callable, api_call_count,
                                  session_id: str, turn_id: str, api_mode: str,
                                  context: Mapping[str, Any]):
-        # Only the first provider attempt of a turn is eligible (Hermes counts 1-based);
-        # tool rounds, retries, fallbacks, and continuations always see count >= 2.
-        if self.settings.mode == "off" or int(api_call_count or 0) != 1:
+        if not self._eligible(api_call_count, session_id, turn_id):
             return downstream()
         text = extract_latest_user_text(request, api_mode)
         if text is None:
@@ -136,8 +193,6 @@ class FastPathRuntime:
             decision = self.classifier(text, candidates, context, self.settings)
             if session_id and turn_id:
                 self.cache.put(key, decision)
-        with self._status_lock:
-            self._last_decision_at = datetime.now(timezone.utc).isoformat()
 
         rejected = (
             decision.handler_id == "normal_llm"
@@ -155,7 +210,15 @@ class FastPathRuntime:
             ), context)
             return downstream()
 
-        rendered = self.renderer(decision.handler_id, text, context, self.settings, self.status())
+        # The status handed to handlers shows the PRIOR decision (audit L9); this turn's
+        # stamp lands after rendering so fastpath_status never reports itself.
+        status_snapshot = self.status()
+        with self._status_lock:
+            self._last_decision_at = datetime.now(timezone.utc).isoformat()
+        rendered = self.renderer(
+            decision.handler_id, text, context, self.settings, status_snapshot,
+            now_fn=self.now_fn,
+        )
         if self.settings.mode == "shadow":
             self._emit(TelemetryEvent(
                 outcome="would_short_circuit", reason="shadow", text=text,

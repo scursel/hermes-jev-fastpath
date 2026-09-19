@@ -146,15 +146,16 @@ _ACK_TEXT = {
 }
 
 
-def _calculator(text: str, context: Mapping[str, Any], settings: Settings, status: Mapping[str, Any]) -> str:
+def _calculator(text: str, context: Mapping[str, Any], settings: Settings, status: Mapping[str, Any],
+           *, now_fn=None) -> str:
     return render_calculation(text)
 
 
-def _clock(text: str, context: Mapping[str, Any], settings: Settings, status: Mapping[str, Any]) -> str:
+def _clock(text: str, context: Mapping[str, Any], settings: Settings, status: Mapping[str, Any],
+           *, now_fn: Callable | None = None) -> str:
     shape = classify_clock_request(text)
     if shape is None:
         raise HandlerRejected("not a direct clock request")
-    now_fn = context.get("now_fn")
     try:
         tz = ZoneInfo(settings.timezone)
         now = now_fn(tz) if callable(now_fn) else datetime.now(tz)
@@ -188,7 +189,8 @@ _IDENTITY_LABELS = {
 }
 
 
-def _runtime_identity(text: str, context: Mapping[str, Any], settings: Settings, status: Mapping[str, Any]) -> str:
+def _runtime_identity(text: str, context: Mapping[str, Any], settings: Settings, status: Mapping[str, Any],
+           *, now_fn=None) -> str:
     fields = classify_identity_fields(text)
     if not fields:
         raise HandlerRejected("not a direct identity question")
@@ -203,14 +205,16 @@ def _runtime_identity(text: str, context: Mapping[str, Any], settings: Settings,
     return ", ".join(parts)
 
 
-def _acknowledgement(text: str, context: Mapping[str, Any], settings: Settings, status: Mapping[str, Any]) -> str:
+def _acknowledgement(text: str, context: Mapping[str, Any], settings: Settings, status: Mapping[str, Any],
+           *, now_fn=None) -> str:
     kind = classify_acknowledgement(text)
     if kind is None:
         raise HandlerRejected("not an exact allowlisted acknowledgement")
     return _ACK_TEXT[(kind, settings.locale)]
 
 
-def _fastpath_status(text: str, context: Mapping[str, Any], settings: Settings, status: Mapping[str, Any]) -> str:
+def _fastpath_status(text: str, context: Mapping[str, Any], settings: Settings, status: Mapping[str, Any],
+           *, now_fn=None) -> str:
     if not classify_status_request(text):
         raise HandlerRejected("not a direct status request")
     handlers_list = ", ".join(status.get("enabled_handlers", ()))
@@ -245,12 +249,18 @@ def render_handler(
     context: Mapping[str, Any],
     settings: Settings,
     status: Mapping[str, Any],
+    *,
+    now_fn: Callable | None = None,
 ) -> HandlerResult:
-    """Validate the handler choice against the allowlist and render a bounded local answer."""
+    """Validate the handler choice against the allowlist and render a bounded local answer.
+
+    ``now_fn`` is the explicit internal clock seam for deterministic tests; Hermes runtime
+    context can never inject it.
+    """
     if handler_id not in settings.enabled_handlers or handler_id not in HANDLERS:
         raise HandlerRejected(f"handler not enabled: {handler_id}")
     try:
-        rendered = HANDLERS[handler_id](text, context, settings, status).strip()
+        rendered = HANDLERS[handler_id](text, context, settings, status, now_fn=now_fn).strip()
     except HandlerRejected:
         raise
     except Exception as exc:

@@ -47,29 +47,33 @@ class TestClock:
         return _now
 
     def test_time_only(self, settings):
-        context = {**CONTEXT, "now_fn": self._now_fn("America/Sao_Paulo")}
-        result = render_handler("clock", "que horas são?", context, settings, _status())
+        result = render_handler(
+            "clock", "que horas são?", CONTEXT, settings, _status(), now_fn=self._now_fn("America/Sao_Paulo")
+        )
         assert result.text == "Agora são 14:30 (America/Sao_Paulo)."
 
     def test_date_only(self, settings):
-        context = {**CONTEXT, "now_fn": self._now_fn("America/Sao_Paulo")}
-        result = render_handler("clock", "que dia é hoje", context, settings, _status())
+        result = render_handler(
+            "clock", "que dia é hoje", CONTEXT, settings, _status(), now_fn=self._now_fn("America/Sao_Paulo")
+        )
         assert result.text == "Hoje é 19/09/2026 (America/Sao_Paulo)."
 
     def test_date_and_time(self):
         from jev_fastpath.config import Settings
 
         lisbon = Settings(timezone="Europe/Lisbon")
-        context = {**CONTEXT, "now_fn": self._now_fn("Europe/Lisbon")}
-        result = render_handler("clock", "que dia e horas são?", context, lisbon, _status())
+        result = render_handler(
+            "clock", "que dia e horas são?", CONTEXT, lisbon, _status(), now_fn=self._now_fn("Europe/Lisbon")
+        )
         assert result.text == "Agora são 14:30 de 19/09/2026 (Europe/Lisbon)."
 
     def test_english_locale(self):
         from jev_fastpath.config import Settings
 
         en_settings = Settings(locale="en")
-        context = {**CONTEXT, "now_fn": self._now_fn("America/Sao_Paulo")}
-        result = render_handler("clock", "what time is it?", context, en_settings, _status())
+        result = render_handler(
+            "clock", "what time is it?", CONTEXT, en_settings, _status(), now_fn=self._now_fn("America/Sao_Paulo")
+        )
         assert result.text == "It is 14:30 (America/Sao_Paulo)."
 
     def test_unknown_timezone_rejects(self):
@@ -77,7 +81,15 @@ class TestClock:
 
         broken = Settings(timezone="Mars/Olympus_Mons")
         with pytest.raises(Exception):
-            render_handler("clock", "que horas são?", CONTEXT, broken, _status())
+            render_handler(
+                "clock", "que horas são?", CONTEXT, broken, _status(), now_fn=self._now_fn("America/Sao_Paulo")
+            )
+
+    def test_context_cannot_inject_now_fn(self, settings):
+        # Hardening: a hostile runtime-context key must not become a clock override.
+        context = {**CONTEXT, "now_fn": lambda tz: datetime(1999, 1, 1, tzinfo=tz)}
+        result = render_handler("clock", "que horas são?", context, settings, _status())
+        assert "1999" not in result.text
 
 
 class TestRuntimeIdentity:

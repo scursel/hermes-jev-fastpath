@@ -184,6 +184,7 @@ def _attach_runtime(agent, *, settings_mode, route):
             self.events.append(event)
 
     def classifier(text, candidates, context, settings):
+        classifier.calls.append((text, candidates))
         if route == "fastpath":
             return Decision(
                 handler_id="calculator", confidence=0.97,
@@ -193,6 +194,8 @@ def _attach_runtime(agent, *, settings_mode, route):
             handler_id="normal_llm", confidence=0.97,
             short_circuit_probability=0.95, latency_ms=1,
         )
+
+    classifier.calls = []
 
     runtime = FastPathRuntime(
         Settings(mode=settings_mode), classifier=classifier, telemetry=Recorder(),
@@ -255,3 +258,101 @@ def test_agent_loop_normal_llm_fallthrough_calls_provider_once(hermes_home, monk
     assert result["completed"] is True
     assert result["final_response"] == "the llm answer"
     assert len(calls) == 1
+
+
+def _invalid_provider_response(api_mode):
+    if api_mode == "chat_completions":
+        return types.SimpleNamespace(choices=[], usage=None, model="test-model")
+    return types.SimpleNamespace(output=[], status="completed", usage=None, model="test-model")
+
+
+def _provider_text_response(api_mode):
+    if api_mode == "chat_completions":
+        return types.SimpleNamespace(
+            choices=[types.SimpleNamespace(
+                message=types.SimpleNamespace(content="the llm answer", tool_calls=None),
+                finish_reason="stop",
+            )],
+            usage=None,
+            model="test-model",
+        )
+    return types.SimpleNamespace(
+        output=[types.SimpleNamespace(
+            type="message", role="assistant", status="completed",
+            content=[types.SimpleNamespace(type="output_text", text="the llm answer")],
+        )],
+        usage=None,
+        status="completed",
+        model="test-model",
+    )
+
+
+@pytest.mark.parametrize("api_mode", ["chat_completions", "codex_responses"])
+def test_agent_loop_retry_after_invalid_response_never_short_circuits(
+    hermes_home, monkeypatch, api_mode,
+):
+    """H1 regression: invalid provider response -> retry. Jev runs at most once, exactly
+    one telemetry row exists, and the retry is never short-circuited."""
+    import time as time_module
+
+    agent = _build_agent(hermes_home, api_mode)
+    runtime = _attach_runtime(agent, settings_mode="active", route="normal_llm")
+    provider_calls = []
+
+    def fake_provider(api_kwargs):
+        provider_calls.append(api_kwargs)
+        if len(provider_calls) == 1:
+            return _invalid_provider_response(api_mode)
+        return _provider_text_response(api_mode)
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", fake_provider)
+    # Kill retry backoff so the test does not sleep on wall clock.
+    monkeypatch.setattr("agent.retry_utils.jittered_backoff", lambda *a, **k: 0.0)
+    monkeypatch.setattr(time_module, "sleep", lambda *_a, **_k: None)
+
+    result = agent.run_conversation("2 + 2")
+
+    assert result["completed"] is True
+    assert result["final_response"] == "the llm answer"
+    assert len(provider_calls) == 2          # invalid attempt + retry reached the provider
+    assert len(runtime.classifier.calls) == 1  # Jev evaluated at most once for the turn
+    assert len(runtime.telemetry.events) == 1  # exactly one telemetry row, no duplicates
+
+
+@pytest.mark.parametrize("api_mode", ["chat_completions", "codex_responses"])
+def test_agent_loop_retry_after_invalid_synthetic_reaches_provider(
+    hermes_home, monkeypatch, api_mode,
+):
+    """H1 regression, accepted decision: a synthetic response Hermes rejects must not be
+    re-rendered for the retry — the per-turn claim sends the retry to the provider."""
+    import time as time_module
+
+    agent = _build_agent(hermes_home, api_mode)
+    runtime = _attach_runtime(agent, settings_mode="active", route="fastpath")
+    factory_calls = []
+
+    def flaky_factory(api_mode_, text):
+        factory_calls.append((api_mode_, text))
+        if len(factory_calls) == 1:
+            return _invalid_provider_response(api_mode)  # synthetic Hermes must reject
+        return _provider_text_response(api_mode)
+
+    runtime.response_factory = flaky_factory
+    provider_calls = []
+
+    def fake_provider(api_kwargs):
+        provider_calls.append(api_kwargs)
+        return _provider_text_response(api_mode)
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", fake_provider)
+    monkeypatch.setattr("agent.retry_utils.jittered_backoff", lambda *a, **k: 0.0)
+    monkeypatch.setattr(time_module, "sleep", lambda *_a, **_k: None)
+
+    result = agent.run_conversation("2 + 2")
+
+    assert result["completed"] is True
+    assert result["final_response"] == "the llm answer"
+    assert len(provider_calls) == 1           # the retry reached the real provider
+    assert len(runtime.classifier.calls) == 1  # Jev evaluated at most once for the turn
+    assert len(runtime.telemetry.events) == 1  # no duplicate telemetry rows
+    assert len(factory_calls) == 1            # the synthetic was never re-rendered
