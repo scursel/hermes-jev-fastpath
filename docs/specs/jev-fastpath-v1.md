@@ -20,9 +20,14 @@ Reduce net model cost and latency for simple requests that do not require genera
 6. Jev output is advisory input to a strict local validator. It can never produce shell, Python, URLs, tool names, files, commands, or free-form response text.
 7. A fast path runs only when all of these are true:
    - plugin mode is `active`;
-   - the turn is the first provider attempt;
+   - this is the first middleware invocation for the `(session_id, turn_id)` pair (an
+     atomic, bounded per-turn eligibility claim is taken before candidate detection or
+     telemetry; Hermes retries/fallbacks/restarts can re-deliver `api_call_count == 1`,
+     and only the claimed invocation may evaluate — turns with a missing count or turn
+     ID are never eligible);
    - the current user input is non-empty plain text;
-   - at least one deterministic candidate exists;
+   - at least one deterministic candidate exists (an explicit arithmetic operator is
+     required for the calculator — bare numbers are never candidates);
    - Jev returns a known handler ID;
    - Jev choice confidence is at least `0.92` by default;
    - Jev's typed short-circuit `noul` is at least `0.90` by default;
@@ -38,16 +43,17 @@ Reduce net model cost and latency for simple requests that do not require genera
 
 ### 4.1 `calculator`
 
-Handles a pure arithmetic request when the expression can be reduced to a safe AST containing only numeric constants, parentheses, unary `+`/`-`, and binary `+`, `-`, `*`, `/`, `//`, `%`, and `**`.
+Handles a pure arithmetic request when the expression can be reduced to a safe AST containing only numeric constants, parentheses, unary `+`/`-`, and binary `+`, `-`, `*`, `/`, `//`, `%`, and `**`. An explicit binary operator is required: bare numbers (phone numbers, OTP codes, numbered-menu replies) are never candidates.
 
 Limits:
 
 - expression length: 160 characters;
 - AST nodes: 64;
-- integer digits: 100;
-- absolute exponent: 12;
+- integer digits: 100 (literals and every intermediate numerator/denominator);
+- absolute integer exponent: 12;
 - no names, attributes, calls, indexing, strings, comprehensions, booleans, or containers;
-- division by zero and non-finite results reject the fast path;
+- division by zero and digit-cap breaches reject the fast path;
+- arithmetic is exact (`fractions.Fraction`, decimal literals read as exact decimals): `12345678901234567890 / 2` renders `6172839450617283945`, `0.1 + 0.2` renders `0.3`, `1 / 100000000` renders `0.00000001`; non-terminating rationals render as the exact fraction (`1 / 3` → `1/3`) instead of a rounded decimal;
 - result formatting is deterministic and locale-independent.
 
 Examples accepted:
@@ -74,7 +80,7 @@ Answers direct questions about the current Hermes provider, model, API mode, or 
 
 ### 4.4 `acknowledgement`
 
-Handles only exact, bounded social acknowledgements such as `obrigado`, `valeu`, `ok`, `entendi`, `thanks`, and `got it`. Matching is normalized and allowlisted; substrings in a longer request do not qualify. Responses are fixed by locale.
+Handles only exact, allowlisted **gratitude** such as `obrigado`, `obrigada`, `valeu`, and `thanks`. Gratitude-only is deliberate (v1.1 audit decision 1): go-ahead/approval words (`ok`, `certo`, `beleza`, `combinado`, `fechou`, `perfeito`, `entendi`, `got it`, `sounds good`, `roger that`, …) are context-dependent replies to an assistant question or proposal and must never qualify. Matching is normalized and allowlisted; substrings in a longer request do not qualify. Responses are fixed by locale.
 
 ### 4.5 `fastpath_status`
 
@@ -138,7 +144,24 @@ The parser requires:
 - `answers.safe_to_short_circuit.noul` is a finite number in `[0, 1]`;
 - missing or invalid probability is an error, not zero and not success.
 
-The client uses one request, no retry, and a default timeout of 3 seconds. A timeout is more expensive than a normal fallthrough and must not stall the turn repeatedly.
+The client uses one request, no retry, and treats `settings.timeout_seconds` as a hard
+wall-clock deadline (the exchange runs on a bounded worker pool with the socket timeout
+applied), caps the response at 64 KiB, rejects every HTTP redirect without following it
+(so the authorization header is never replayed elsewhere), and opens a thread-safe
+failure circuit breaker (3 consecutive failures → 30 s cooldown by default) so a TypeSafe
+outage fails every candidate turn open without stalling it. A timeout is more expensive
+than a normal fallthrough and must not stall the turn repeatedly.
+
+The credential resolves through the **active Hermes secret scope**
+(`agent.secret_scope.get_secret("TYPESAFE_API_KEY")`), never the ambient launch-profile
+environment while a profile scope is installed (multiplexed gateways). An empty or
+missing scoped credential, an unscoped-secret error under active multiplexing, or any
+secret-scope runtime error fails open as a coded `JevError` — it never falls back to
+`os.environ`. `os.environ` is consulted only when the Hermes module is genuinely
+unavailable (standalone test/package compatibility). Failures map to bounded non-secret
+reason codes: `missing_credential`, `credential_error`, `timeout`, `network_error`,
+`http_error`, `auth_error`, `redirect`, `response_too_large`, `invalid_response`,
+`circuit_open`.
 
 ## 7. Middleware lifecycle
 
