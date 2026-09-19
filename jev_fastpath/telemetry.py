@@ -1,13 +1,25 @@
-"""Secret redaction primitives shared by the Jev client and the audit writer.
+"""Redacted, bounded JSONL audit telemetry plus the shared redaction primitives.
 
-Redaction is defense in depth: candidates and messages are already filtered upstream, but
-anything that ever reaches a log, a telemetry row, or the TypeSafe request is scrubbed of
-credential-shaped substrings first.
+The writer serializes only a fixed field set: hashed session/turn identities, bounded
+redacted previews, and flat numeric Jev usage. Nested provider payloads are discarded and
+every I/O failure is swallowed after one debug signal — telemetry can never affect a turn.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
+import logging
+import math
 import re
+import threading
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Mapping
+
+from .types import TelemetryEvent
+
+logger = logging.getLogger("jev_fastpath.telemetry")
 
 # (pattern, replacement) pairs; every match is credential-shaped, never prose.
 SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
@@ -38,3 +50,59 @@ def redact_and_bound(text: str, max_chars: int) -> str:
     if not isinstance(text, str):
         return ""
     return redact(text)[: max(0, int(max_chars))]
+
+
+class TelemetryWriter:
+    """Append-only JSONL decision log under ``<HERMES_HOME>/artifacts/jev_fastpath``."""
+
+    def __init__(self, home: Path, max_preview: int = 160):
+        self.path = Path(home) / "artifacts" / "jev_fastpath" / "decisions.jsonl"
+        self.max_preview = int(max_preview)
+        self._lock = threading.Lock()
+
+    def write(self, event: TelemetryEvent, context: Mapping[str, Any]) -> None:
+        """Serialize one fixed-shape record; never raises, never affects the turn."""
+        try:
+            self._write(event, context)
+        except Exception:
+            logger.debug("jev-fastpath telemetry write failed", exc_info=True)
+
+    def _write(self, event: TelemetryEvent, context: Mapping[str, Any]) -> None:
+        def digest(value: object) -> str:
+            return hashlib.sha256(str(value or "").encode("utf-8", "replace")).hexdigest()[:16]
+
+        usage = {
+            key: value
+            for key in ("cost", "input_tokens", "output_tokens")
+            if isinstance((value := event.usage.get(key)), (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(float(value))
+        }
+        row = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "mode": str(context.get("mode") or ""),
+            "session_hash": digest(context.get("session_id")),
+            "turn_hash": digest(context.get("turn_id")),
+            "platform": str(context.get("platform") or "")[:64],
+            "provider": str(context.get("provider") or "")[:128],
+            "model": str(context.get("model") or "")[:256],
+            "api_mode": str(context.get("api_mode") or "")[:64],
+            "text_hash": digest(event.text),
+            "text_preview": redact(event.text)[: self.max_preview],
+            "candidates": list(event.candidates),
+            "selected_handler": event.selected_handler,
+            "confidence": event.confidence,
+            "short_circuit_probability": event.short_circuit_probability,
+            "latency_ms": event.latency_ms,
+            "outcome": event.outcome,
+            "reason": redact(event.reason)[:160],
+            "provider_call_avoided": event.outcome == "short_circuit",
+            "usage": usage,
+        }
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            line = json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n"
+            with self._lock, self.path.open("a", encoding="utf-8") as handle:
+                handle.write(line)
+        except OSError as exc:
+            raise RuntimeError("telemetry sink unavailable") from exc
