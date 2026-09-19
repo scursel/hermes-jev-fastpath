@@ -165,6 +165,17 @@ class TestDetectCandidates:
         assert detect_candidates("11987654321", settings) == ()
         assert detect_candidates("123456", settings) == ()
 
+    def test_hyphenated_phone_fragment_is_not_arithmetic(self, settings):
+        # Audit L-a: "98765-4321" parses as a subtraction but is a phone/local-number
+        # fragment; the eligibility gate must reject it before Jev ever sees the text.
+        assert detect_candidates("98765-4321", settings) == ()
+        assert detect_candidates("9876-5432", settings) == ()
+        assert detect_candidates("98765-4321?", settings) == ()
+        # Real math stays a calculator candidate: spaced operands and short operands.
+        assert detect_candidates("98765 - 4321", settings) == ("calculator",)
+        assert detect_candidates("10-3", settings) == ("calculator",)
+        assert detect_candidates("1234-123", settings) == ("calculator",)
+
     def test_clock_requests_are_candidates(self, settings):
         assert detect_candidates("que horas são?", settings) == ("clock",)
         assert detect_candidates("que dia é hoje", settings) == ("clock",)
@@ -211,12 +222,16 @@ class TestDetectCandidates:
         for text in ("2 + 2", "obrigado", "que horas são?", "qual é o seu modelo?"):
             assert "normal_llm" not in detect_candidates(text, settings)
 
-    def test_multiple_candidates_preserve_known_order(self, settings):
-        # "que horas" is not arithmetic; verify order rule with a synthetic overlap instead:
-        # an expression that also matches an ack is impossible, so probe order via two
-        # parser-valid shapes is covered by the KNOWN_HANDLERS ordering contract.
-        from jev_fastpath.candidates import KNOWN_ORDER
-        assert KNOWN_ORDER == (
+    def test_multiple_candidates_preserve_known_order(self, settings, monkeypatch):
+        # Force every parser to accept so the candidate ORDER is exercised for real.
+        import jev_fastpath.candidates as candidates_module
+
+        monkeypatch.setattr(candidates_module, "_is_calculator_request", lambda text: True)
+        monkeypatch.setattr(candidates_module, "classify_clock_request", lambda text: True)
+        monkeypatch.setattr(candidates_module, "classify_identity_fields", lambda text: True)
+        monkeypatch.setattr(candidates_module, "classify_acknowledgement", lambda text: True)
+        monkeypatch.setattr(candidates_module, "classify_status_request", lambda text: True)
+        assert detect_candidates("qualquer coisa", settings) == (
             "calculator", "clock", "runtime_identity", "acknowledgement", "fastpath_status",
         )
 

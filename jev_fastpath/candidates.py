@@ -24,6 +24,11 @@ from .handlers import (
 
 KNOWN_ORDER = tuple(KNOWN_HANDLERS)
 
+# An unspaced ``98765-4321`` parses as a subtraction but is a phone/local-number
+# fragment, never arithmetic: the eligibility gate rejects it before Jev sees the text
+# (audit L-a). Spaced math (``98765 - 4321``) and short operands (``10-3``) stay valid.
+_PHONE_FRAGMENT = re.compile(r"^\d{4,5}-\d{4}$")
+
 _REJECT_PATTERNS = (
     re.compile(r"```"),
     re.compile(r"https?://", re.IGNORECASE),
@@ -36,6 +41,8 @@ _REJECT_PATTERNS = (
 def _is_calculator_request(text: str) -> bool:
     try:
         expression = extract_expression(text)
+        if _PHONE_FRAGMENT.match(expression):
+            return False
         if not has_binary_operator(expression):
             # Bare numbers (phone numbers, OTP codes, menu replies) are never arithmetic.
             return False
