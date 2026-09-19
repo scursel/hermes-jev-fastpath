@@ -361,18 +361,30 @@ class TestRegister:
             self.registered.append((kind, callback))
 
     @pytest.fixture(autouse=True)
-    def _fake_hermes_home(self, tmp_path, monkeypatch):
+    def _hermes_home(self, tmp_path, monkeypatch):
+        """Point the telemetry home at a throwaway directory.
+
+        With the real Hermes runtime present (full suite), the real ``hermes_constants``
+        module resolves ``HERMES_HOME`` — never inject a fake over it, or unrelated
+        Hermes imports log errors. The fake module exists only for the standalone suite.
+        """
         import sys
         import types
 
-        module = types.ModuleType("hermes_constants")
+        try:
+            import hermes_constants  # noqa: F401
 
-        def get_hermes_home():
+            monkeypatch.setenv("HERMES_HOME", str(tmp_path))
             return tmp_path
+        except ImportError:
+            module = types.ModuleType("hermes_constants")
 
-        module.get_hermes_home = get_hermes_home
-        monkeypatch.setitem(sys.modules, "hermes_constants", module)
-        return tmp_path
+            def get_hermes_home():
+                return tmp_path
+
+            module.get_hermes_home = get_hermes_home
+            monkeypatch.setitem(sys.modules, "hermes_constants", module)
+            return tmp_path
 
     def test_register_wires_llm_execution_middleware(self):
         ctx = self.FakeContext({"mode": "active"})

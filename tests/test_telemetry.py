@@ -246,12 +246,16 @@ def test_io_errors_are_swallowed(tmp_path, caplog):
     writer.write(_event(), _context())
 
 
-def test_missing_context_fields_render_empty(records):
+def test_missing_context_fields_hash_the_empty_string(records):
     writer, read = records
     writer.write(_event(), {})
     row = read()[0]
+    import hashlib
+
+    empty = hashlib.sha256(b"").hexdigest()[:16]
+    assert row["session_hash"] == empty
+    assert row["turn_hash"] == empty
     assert row["mode"] == ""
-    assert row["session_hash"] == "" or row["session_hash"]
 
 
 def test_redact_handles_non_string():

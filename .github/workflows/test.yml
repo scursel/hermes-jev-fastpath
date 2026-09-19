@@ -1,21 +1,32 @@
 name: test
 
+# Hermes source used by CI: the pinned PyPI release `hermes-agent==0.21.3` (matching the
+# plugin's `requires_hermes: ">=0.21.3"`). The pytest environment comes from this repo's
+# `[test]` extra, which pins pytest>=8,<9 as declared.
+
 on:
   push:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.11", "3.12"]
     steps:
-      - uses: actions/checkout@v4
+      # actions/checkout v4.2.2 (pinned to commit SHA)
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
-      - uses: actions/setup-python@v5
+      # actions/setup-python v5.6.0 (pinned to commit SHA)
+      - uses: actions/setup-python@a26af69be951a213d495a4c82e175a2923ca4352
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -56,10 +67,10 @@ jobs:
       - name: Forbidden implementation patterns
         run: python scripts/check_forbidden_patterns.py
 
-      - name: SkillSpector (optional, when installed)
+      - name: SkillSpector release gate (mandatory)
         run: |
-          if command -v skillspector >/dev/null 2>&1; then
-            skillspector scan . --no-llm
-          else
-            echo "skillspector not installed on this runner; local fleet verification is authoritative"
-          fi
+          python -m pip install skillspector || {
+            echo "skillspector could not be installed; the release gate cannot run." >&2
+            exit 1
+          }
+          scripts/skillspector_gate.sh
