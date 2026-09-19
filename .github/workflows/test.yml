@@ -34,19 +34,22 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       # Hermes intentionally refuses wheel/sdist builds; its supported development path
-      # is an editable checkout. Pin both the checkout action and the upstream source SHA.
+      # is an editable checkout. Keep that checkout outside this plugin tree: the Hermes
+      # catalog validator recursively security-scans the directory it is asked to validate.
       - name: Checkout pinned Hermes Agent source
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          repository: NousResearch/hermes-agent
-          ref: 7c6f21a5e12ba9b1c674ec9b410fa6b8c45de4f8
-          path: .ci/hermes-agent
-          persist-credentials: false
+        env:
+          HERMES_AGENT_SHA: 7c6f21a5e12ba9b1c674ec9b410fa6b8c45de4f8
+        run: |
+          git init "$RUNNER_TEMP/hermes-agent"
+          git -C "$RUNNER_TEMP/hermes-agent" remote add origin https://github.com/NousResearch/hermes-agent.git
+          git -C "$RUNNER_TEMP/hermes-agent" fetch --depth=1 origin "$HERMES_AGENT_SHA"
+          git -C "$RUNNER_TEMP/hermes-agent" checkout --detach FETCH_HEAD
+          test "$(git -C "$RUNNER_TEMP/hermes-agent" rev-parse HEAD)" = "$HERMES_AGENT_SHA"
 
       - name: Install test dependencies and pinned Hermes Agent source
         run: |
           python -m pip install -e '.[test]'
-          python -m pip install -e .ci/hermes-agent
+          python -m pip install -e "$RUNNER_TEMP/hermes-agent"
 
       - name: Byte-compile
         run: python -m compileall -q jev_fastpath scripts __init__.py
