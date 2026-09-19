@@ -1,6 +1,7 @@
 """FastPathRuntime middleware matrix: exactly-once fallthrough, zero-call fast paths."""
 
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import Mock
 
 import pytest
@@ -294,7 +295,7 @@ class TestDecisionCache:
             with lock:
                 seen.append(response.choices[0].message.content)
 
-        with __import__("concurrent.futures", fromlist=["ThreadPoolExecutor"]).ThreadPoolExecutor(max_workers=8) as pool:
+        with ThreadPoolExecutor(max_workers=8) as pool:
             list(pool.map(_turn, (f"t{index}" for index in range(16))))
         assert len(seen) == 16
         assert all(text == "2 + 2 = 4" for text in seen)

@@ -1,0 +1,62 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install test dependencies and Hermes Agent
+        run: python -m pip install -e '.[test]' hermes-agent==0.21.3
+
+      - name: Byte-compile
+        run: python -m compileall -q jev_fastpath scripts __init__.py
+
+      - name: Unit and integration tests
+        env:
+          # The default suite never requires credentials or network; the live TypeSafe
+          # probe is optional and excluded.
+          TYPESAFE_API_KEY: ""
+        run: python -m pytest -q
+
+      - name: Manifest parse smoke
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from hermes_cli.plugins import parse_manifest_file
+          m = parse_manifest_file(Path('plugin.yaml'), Path('.'), 'ci', '')
+          assert m is not None and m.name == 'jev-fastpath', m
+          assert m.kind == 'standalone'
+          assert int(m.manifest_version) == 2
+          print('manifest ok:', m.name, m.version)
+          PY
+
+      - name: Credential-free plugin smoke
+        run: python scripts/smoke_plugin.py
+
+      - name: Plugin doctor
+        run: hermes plugins doctor . --ci
+
+      - name: Forbidden implementation patterns
+        run: python scripts/check_forbidden_patterns.py
+
+      - name: SkillSpector (optional, when installed)
+        run: |
+          if command -v skillspector >/dev/null 2>&1; then
+            skillspector scan . --no-llm
+          else
+            echo "skillspector not installed on this runner; local fleet verification is authoritative"
+          fi
