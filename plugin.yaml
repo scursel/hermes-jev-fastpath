@@ -1,0 +1,27 @@
+name: jev-fastpath
+version: "0.1.0"
+description: "TypeSafe Jev deterministic fast paths before Hermes LLM execution"
+author: "Gabriel Scursel"
+license: MIT
+homepage: "https://github.com/scursel/hermes-jev-fastpath"
+manifest_version: 2
+api_version: 1
+kind: standalone
+provides_tools: []
+provides_hooks: []
+requires_env:
+  - TYPESAFE_API_KEY
+python_dependencies: []
+tags:
+  - jev
+  - fast-path
+  - token-savings
+config_schema:
+  mode: {type: str, default: shadow, description: "off, shadow, or active"}
+  confidence_threshold: {type: float, default: 0.92, description: "Minimum Jev choice confidence"}
+  short_circuit_threshold: {type: float, default: 0.90, description: "Minimum Jev short-circuit probability"}
+  timeout_seconds: {type: float, default: 3.0, description: "TypeSafe request timeout"}
+  timezone: {type: str, default: America/Sao_Paulo, description: "IANA timezone for clock handler"}
+  locale: {type: str, default: pt-BR, description: "pt-BR or en"}
+  max_input_chars: {type: int, default: 4000, description: "Maximum candidate input length"}
+  enabled_handlers: {type: list, default: [calculator, clock, runtime_identity, acknowledgement, fastpath_status], description: "Allowlisted deterministic handlers"}
