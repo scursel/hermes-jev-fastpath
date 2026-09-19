@@ -10,6 +10,13 @@
 
 **Spec:** `docs/specs/jev-fastpath-v1.md`
 
+**Authoritative Hermes contracts:**
+- Plugin authoring: `https://hermes-agent.nousresearch.com/docs/developer-guide/plugins`
+- Middleware: `https://hermes-agent.nousresearch.com/docs/developer-guide/middleware`
+- Plugin operation and enablement: `https://hermes-agent.nousresearch.com/docs/user-guide/features/plugins`
+
+The implementation relies on the documented `llm_execution` short-circuit contract: execution middleware may intentionally skip `next_call(...)`, but it must return the unwrapped raw response shape expected by the selected provider adapter. Middleware callbacks accept `**kwargs` for additive compatibility. Validation must use `hermes plugins doctor . --ci`, which exercises real discovery, namespaced import, and `register(ctx)` rather than only parsing the manifest.
+
 ## Global Constraints
 
 - The deliverable is a standalone Hermes plugin; do not modify `/home/scursel/.hermes/hermes-agent` or any live profile.
@@ -343,9 +350,11 @@ python -m pytest tests/test_config.py -q
 PYTHONPATH=/home/scursel/.hermes/hermes-agent \
   /home/scursel/.hermes/hermes-agent/venv/bin/python -c \
   "from pathlib import Path; from hermes_cli.plugins import parse_manifest_file; m=parse_manifest_file(Path('plugin.yaml')); assert m.name == 'jev-fastpath'; assert m.provides_middleware == ['llm_execution']"
+HERMES_HOME="$(mktemp -d)" \
+  /home/scursel/.hermes/hermes-agent/venv/bin/hermes plugins doctor . --ci
 ```
 
-Expected: all config tests pass and manifest parsing exits 0.
+Expected: all config tests pass, manifest parsing exits 0, and Plugin Doctor reports successful discovery, namespaced import, and middleware registration.
 
 - [ ] **Step 7: Commit the scaffold**
 
