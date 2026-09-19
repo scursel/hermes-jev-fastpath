@@ -4,15 +4,15 @@ description: "TypeSafe Jev deterministic fast paths before Hermes LLM execution"
 author: "Gabriel Scursel"
 license: MIT
 homepage: "https://github.com/scursel/hermes-jev-fastpath"
-manifest_version: 2
+manifest_version: 1
 api_version: 1
 kind: standalone
 provides_tools: []
 provides_hooks: []
-# Upstream mismatch (audit M5 / decision 4): the Hermes 0.21.3 runtime manifest parser does
-# not model `provides_middleware` (it logs a harmless unknown-field warning), but
-# `hermes plugins validate` REJECTS middleware registered without this declaration. Keep
-# the declaration; see tests/test_manifest.py for the proven behavior.
+# Hermes 0.21.3's runtime parser understands manifest v2, but its public Git installer
+# rejects anything above v1. Keep v1 until the installer and parser share the same ceiling.
+# `hermes plugins validate` still REJECTS middleware registered without this declaration,
+# even though the runtime parser logs it as an unknown field; see tests/test_manifest.py.
 provides_middleware:
   - llm_execution
 requires_hermes: ">=0.21.3"

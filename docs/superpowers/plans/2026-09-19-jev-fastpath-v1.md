@@ -48,7 +48,7 @@ Create these files and keep responsibilities separated:
 ```text
 hermes-jev-fastpath/
 ├── __init__.py                         # Hermes directory-plugin entrypoint; re-exports register
-├── plugin.yaml                         # Manifest v2 and profile-facing config schema
+├── plugin.yaml                         # Installer-compatible manifest v1 and config schema
 ├── pyproject.toml                      # Test/build metadata; no runtime dependencies
 ├── README.md                           # Install, configure, shadow, activate, verify, rollback
 ├── jev_fastpath/
@@ -305,7 +305,7 @@ from .jev_fastpath.plugin import register
 __all__ = ["register"]
 ```
 
-Create `plugin.yaml` using manifest v2:
+Create `plugin.yaml` using installer-compatible manifest v1 (Hermes 0.21.3's runtime parser reads v2, but its public Git installer still caps at v1):
 
 ```yaml
 name: jev-fastpath
@@ -314,7 +314,7 @@ description: "TypeSafe Jev deterministic fast paths before Hermes LLM execution"
 author: "Gabriel Scursel"
 license: MIT
 homepage: "https://github.com/scursel/hermes-jev-fastpath"
-manifest_version: 2
+manifest_version: 1
 api_version: 1
 kind: standalone
 provides_tools: []

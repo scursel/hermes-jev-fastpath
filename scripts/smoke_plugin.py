@@ -37,7 +37,7 @@ def _parse_manifest() -> bool:
         manifest is not None
         and manifest.name == "jev-fastpath"
         and manifest.kind == "standalone"
-        and int(manifest.manifest_version) == 2
+        and int(manifest.manifest_version) == 1
     )
     print(f"manifest: {manifest.name} v{manifest.version}" if manifest else "manifest: PARSE FAILED", file=sys.stderr)
     return bool(ok)

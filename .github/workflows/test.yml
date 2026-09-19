@@ -69,7 +69,7 @@ jobs:
           m = parse_manifest_file(Path('plugin.yaml'), Path('.'), 'ci', '')
           assert m is not None and m.name == 'jev-fastpath', m
           assert m.kind == 'standalone'
-          assert int(m.manifest_version) == 2
+          assert int(m.manifest_version) == 1
           print('manifest ok:', m.name, m.version)
           PY
 

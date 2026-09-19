@@ -1,8 +1,10 @@
 """Manifest declaration guarantees (audit M5 / decision 4).
 
-The Hermes runtime parser does not model ``provides_middleware`` (it warns about an
-unknown field), but ``hermes plugins validate`` REJECTS middleware registered without the
-declaration. The committed manifest therefore declares it and the mismatch is proven here.
+Hermes 0.21.3 has a split ceiling: its runtime parser can read manifest v2, while the
+public Git installer accepts only v1. The manifest stays v1 so the documented pinned
+installation command actually works. Separately, the runtime parser does not model
+``provides_middleware`` (it warns about an unknown field), but ``hermes plugins validate``
+REJECTS middleware registered without that declaration, so it remains explicit here.
 """
 
 from pathlib import Path
@@ -45,8 +47,18 @@ class TestManifestDeclarations:
         manifest = parse_manifest_file(REPO_ROOT / "plugin.yaml", REPO_ROOT, "test", "")
         assert manifest is not None
         assert manifest.name == "jev-fastpath"
-        assert manifest.manifest_version == 2
+        assert manifest.manifest_version == 1
         assert manifest.kind == "standalone"
+
+    def test_current_hermes_git_installer_accepts_the_manifest(self):
+        """Regression: Hermes 0.21.3's installer ceiling is v1 even though its parser reads v2."""
+        pytest.importorskip(
+            "hermes_cli.plugins_cmd",
+            reason="Hermes runtime required; run with PYTHONPATH pointing at the Hermes checkout",
+        )
+        from hermes_cli.plugins_cmd import _check_manifest_version
+
+        _check_manifest_version(_raw_manifest(), "jev-fastpath")
 
     def test_hermes_validator_passes_on_this_repo(self):
         pytest.importorskip(
