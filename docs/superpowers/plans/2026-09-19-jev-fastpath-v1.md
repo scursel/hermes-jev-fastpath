@@ -19,7 +19,7 @@ The implementation relies on the documented `llm_execution` short-circuit contra
 
 ## Global Constraints
 
-- The deliverable is a standalone Hermes plugin; do not modify `/home/scursel/.hermes/hermes-agent` or any live profile.
+- The deliverable is a standalone Hermes plugin; do not modify `/path/to/hermes-agent` or any live profile.
 - Register only `llm_execution` middleware; do not register approval, gateway-blocking, or tool-blocking hooks.
 - Jev is a typed router, never a source of shell, tool arguments, URLs, code, or response prose.
 - Every failure and every uncertainty falls through to `next_call(request)` exactly once.
@@ -347,11 +347,11 @@ Run:
 
 ```bash
 python -m pytest tests/test_config.py -q
-PYTHONPATH=/home/scursel/.hermes/hermes-agent \
-  /home/scursel/.hermes/hermes-agent/venv/bin/python -c \
+PYTHONPATH=/path/to/hermes-agent \
+  /path/to/hermes-agent/venv/bin/python -c \
   "from pathlib import Path; from hermes_cli.plugins import parse_manifest_file; m=parse_manifest_file(Path('plugin.yaml')); assert m.name == 'jev-fastpath'; assert m.provides_middleware == ['llm_execution']"
 HERMES_HOME="$(mktemp -d)" \
-  /home/scursel/.hermes/hermes-agent/venv/bin/hermes plugins doctor . --ci
+  /path/to/hermes-agent/venv/bin/hermes plugins doctor . --ci
 ```
 
 Expected: all config tests pass, manifest parsing exits 0, and Plugin Doctor reports successful discovery, namespaced import, and middleware registration.
@@ -727,7 +727,7 @@ def test_unknown_api_mode_rejected():
 - [ ] **Step 2: Run the focused test and verify failure**
 
 ```bash
-PYTHONPATH=/home/scursel/.hermes/hermes-agent python -m pytest tests/test_responses.py -q
+PYTHONPATH=/path/to/hermes-agent python -m pytest tests/test_responses.py -q
 ```
 
 Expected: import failure because `jev_fastpath.responses` does not exist.
@@ -810,8 +810,8 @@ Run the response tests against the real Hermes transports and adjust only protoc
 - [ ] **Step 4: Run response tests across real Hermes transports**
 
 ```bash
-PYTHONPATH=/home/scursel/.hermes/hermes-agent \
-  /home/scursel/.hermes/hermes-agent/venv/bin/python -m pytest tests/test_responses.py -q
+PYTHONPATH=/path/to/hermes-agent \
+  /path/to/hermes-agent/venv/bin/python -m pytest tests/test_responses.py -q
 ```
 
 Expected: every supported mode validates and normalizes to `resultado` with finish reason `stop`.
@@ -1158,8 +1158,8 @@ Then inject `normal_llm`, return a normal fake provider response, and assert one
 - [ ] **Step 3: Run host integration tests**
 
 ```bash
-PYTHONPATH=/home/scursel/.hermes/hermes-agent \
-  /home/scursel/.hermes/hermes-agent/venv/bin/python -m pytest tests/test_hermes_integration.py -q
+PYTHONPATH=/path/to/hermes-agent \
+  /path/to/hermes-agent/venv/bin/python -m pytest tests/test_hermes_integration.py -q
 ```
 
 Expected: discovery, Chat Completions, Codex Responses, fast-path, and fallthrough cases all pass.
@@ -1181,8 +1181,8 @@ Create `scripts/smoke_plugin.py` that:
 - [ ] **Step 5: Execute the smoke script**
 
 ```bash
-PYTHONPATH=/home/scursel/.hermes/hermes-agent \
-  /home/scursel/.hermes/hermes-agent/venv/bin/python scripts/smoke_plugin.py
+PYTHONPATH=/path/to/hermes-agent \
+  /path/to/hermes-agent/venv/bin/python scripts/smoke_plugin.py
 ```
 
 Expected JSON:
@@ -1227,7 +1227,7 @@ Document:
 - rollback: set mode `off`, unenroll plugin, restart only the affected profile gateway, verify a new PID and `/health`;
 - limitations: no tools, no actions, no gateway health, no 9Router replacement.
 
-Use `/home/scursel/.hermes/profiles/<profile>/plugins/jev-fastpath` only as an example placeholder path in documentation; do not write to it during development.
+Use `$HERMES_HOME/plugins/jev-fastpath` only as an example placeholder path in documentation; do not write to it during development.
 
 - [ ] **Step 2: Add GitHub Actions**
 
@@ -1248,10 +1248,10 @@ Add a final optional SkillSpector step guarded by `command -v skillspector`, so 
 
 ```bash
 python -m compileall -q jev_fastpath __init__.py
-PYTHONPATH=/home/scursel/.hermes/hermes-agent \
-  /home/scursel/.hermes/hermes-agent/venv/bin/python -m pytest -q
-PYTHONPATH=/home/scursel/.hermes/hermes-agent \
-  /home/scursel/.hermes/hermes-agent/venv/bin/python scripts/smoke_plugin.py
+PYTHONPATH=/path/to/hermes-agent \
+  /path/to/hermes-agent/venv/bin/python -m pytest -q
+PYTHONPATH=/path/to/hermes-agent \
+  /path/to/hermes-agent/venv/bin/python scripts/smoke_plugin.py
 skillspector scan . --no-llm
 ```
 

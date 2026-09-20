@@ -1,8 +1,32 @@
 # hermes-jev-fastpath
 
-Profile-scoped Hermes plugin that uses TypeSafe Jev to short-circuit narrow, deterministic
-turns **before** the configured LLM provider is called — with fail-open behavior on every
-uncertainty, timeout, or error.
+[![CI](https://github.com/scursel/hermes-jev-fastpath/actions/workflows/test.yml/badge.svg)](https://github.com/scursel/hermes-jev-fastpath/actions/workflows/test.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Hermes Agent](https://img.shields.io/badge/Hermes_Agent-%3E%3D0.21.3-6f42c1)](https://hermes-agent.nousresearch.com/docs/user-guide/features/plugins/)
+[![Python](https://img.shields.io/badge/Python-%3E%3D3.11-3776ab)](https://www.python.org/)
+
+Profile-scoped [Hermes Agent](https://github.com/NousResearch/hermes-agent) plugin that uses
+[TypeSafe Jev](https://docs.typesafe.ai/introduction) to short-circuit narrow,
+deterministic turns **before** the configured LLM provider is called — with fail-open
+behavior on every uncertainty, timeout, or error.
+
+## Project status
+
+This is an **experimental reference implementation**, not a general-purpose agent
+accelerator. It is production-shaped, security-gated, and fully tested, but its value is
+workload-dependent: it saves a large provider call only when a real turn matches one of
+five deliberately narrow deterministic handlers.
+
+The author's deployment is currently **disabled** after a replay of 7,513 real human
+turns found one eligible turn (0.0133% coverage). A controlled five-prompt A/B still
+showed that accepted hits work as intended: five provider calls avoided, 94,771 net
+tokens avoided after subtracting Jev usage, and 37.63% lower median wall time. These
+figures are evidence for the mechanism, **not** a claim of broad production ROI. See
+[`docs/benchmark.md`](docs/benchmark.md) for method, raw aggregate results, and limits.
+
+Use this plugin when your workload repeatedly contains the supported narrow intents and
+your normal Hermes request carries a large prompt/context. Do not expect it to improve
+coding, tool-heavy tasks, open-ended chat, or `no_agent` cron jobs.
 
 ## What this is (and is not)
 
@@ -16,6 +40,21 @@ the answer text is always rendered locally by an allowlisted handler.
 It is **not** a replacement for 9Router, provider routing, semantic caching, or token
 compression. It does not execute tools, run actions, block dangerous work, make approval
 decisions, or report gateway/systemd/quota health.
+
+## How it differs from other Jev integrations
+
+Jev is a typed decision service; these projects apply it at different boundaries:
+
+| Project | Host boundary | What Jev decides | Calls the main LLM? |
+|---|---|---|---|
+| **hermes-jev-fastpath** (this repo) | Hermes `llm_execution` middleware | Whether one allowlisted local handler can fully answer the current turn | **No** on an accepted active hit; otherwise normal fallthrough |
+| [`ajensenwaud/hermes-jev-plugin`](https://github.com/ajensenwaud/hermes-jev-plugin) | Hermes tools | Typed checks, routes, scores, and evaluations requested by an agent | Yes — the agent chooses and calls the Jev tools |
+| [`litshing/hermes-jev-plugins`](https://github.com/litshing/hermes-jev-plugins) | Hermes context and memory hooks | Which old tool results or memory candidates should survive | Independent of current-turn response routing |
+| [`tamaratran/fast-jev-compaction`](https://github.com/tamaratran/fast-jev-compaction) | Claude Code compaction hook | Which historical tool calls/results to retain | Independent of current-turn response routing |
+
+The projects are independent and are not interchangeable. Running more than one Jev
+integration in the same host can create duplicate TypeSafe calls; verify the active hook
+surfaces before combining them.
 
 ## Deterministic handlers (v1)
 
@@ -62,7 +101,8 @@ and Hermes runs the real provider call exactly once.
 - Hermes Agent `>= 0.21.3` with the native directory-plugin loader (manifest declares
   `requires_hermes: ">=0.21.3"`).
 - Python `>= 3.11` (stdlib only at runtime; no pip dependencies).
-- `TYPESAFE_API_KEY` resolved through the **active Hermes secret scope**. In multiplexed
+- `TYPESAFE_API_KEY` obtained from the [TypeSafe console](https://console.typesafe.ai/keys)
+  and resolved through the **active Hermes secret scope**. In multiplexed
   multi-profile gateways the plugin never reads the ambient launch-profile environment
   while a profile scope is installed: an empty or missing scoped credential fails open
   (fast path disabled for that turn) instead of silently using another profile's value.
@@ -73,19 +113,26 @@ and Hermes runs the real provider call exactly once.
 
 ## Installation (one profile)
 
-Install from the pinned commit (L5): `hermes plugins install` verifies provenance, installs
-into the profile's plugin directory, and never drags `.git`, tests, or virtualenvs along.
+For a quick trial from the public default branch (the plugin starts in `shadow` mode):
+
+```bash
+hermes --profile <profile> plugins install scursel/hermes-jev-fastpath --enable
+```
+
+For a reproducible deployment, install from the pinned commit you audited (L5):
+`hermes plugins install` verifies provenance, installs into the profile's plugin directory,
+and never drags `.git`, tests, or virtualenvs along.
 
 ```bash
 # Resolve the full 40-character commit SHA you audited (example: 5ce7679...), then:
-hermes plugins install scursel/hermes-jev-fastpath --ref <full-40-char-commit-sha> --enable
+hermes --profile <profile> plugins install scursel/hermes-jev-fastpath --ref <full-40-char-commit-sha> --enable
 ```
 
 Update and rollback are the same pinned operation against a different SHA:
 
 ```bash
-hermes plugins install scursel/hermes-jev-fastpath --ref <new-full-sha> --force   # update
-hermes plugins install scursel/hermes-jev-fastpath --ref <old-full-sha> --force   # rollback
+hermes --profile <profile> plugins install scursel/hermes-jev-fastpath --ref <new-full-sha> --force   # update
+hermes --profile <profile> plugins install scursel/hermes-jev-fastpath --ref <old-full-sha> --force   # rollback
 ```
 
 Never `cp -r` a working checkout into a profile: a copied `.git`/`.venv` poisons the
@@ -261,3 +308,15 @@ the report or hang it outright — the scoped gate above is the authoritative si
   answers only.
 - The synthetic response marker (`_jev_fastpath`) is best-effort; telemetry never relies
   on it surviving Hermes normalization.
+- Production benefit depends on workload coverage. Large savings per accepted hit do not
+  imply useful aggregate savings when eligible turns are rare.
+
+## Contributing and security
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the local verification gates. Please report
+security issues privately through [GitHub Security Advisories](https://github.com/scursel/hermes-jev-fastpath/security/advisories/new),
+not through a public issue. See [`SECURITY.md`](SECURITY.md).
+
+## License
+
+MIT © Gabriel Scursel. See [`LICENSE`](LICENSE).
